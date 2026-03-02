@@ -18,11 +18,14 @@ import {
   ArrowUp
 } from 'lucide-react';
 import PluginConnectPage from './src/PluginConnectPage';
+import CursorMockPage from './src/CursorMockPage';
 
 export default function App() {
   const PLUGIN_PAGE_HASH = '#plugin-connect';
+  const CURSOR_PAGE_HASH = '#cursor';
   const [scrolled, setScrolled] = useState(false);
   const [isPluginPage, setIsPluginPage] = useState(() => window.location.hash === PLUGIN_PAGE_HASH);
+  const [isCursorPage, setIsCursorPage] = useState(() => window.location.hash === CURSOR_PAGE_HASH);
   const [ideaInput, setIdeaInput] = useState("");
   const [personaResponse, setPersonaResponse] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -277,20 +280,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const syncPluginPageState = () => {
+    const syncPageState = () => {
       setIsPluginPage(window.location.hash === PLUGIN_PAGE_HASH);
+      setIsCursorPage(window.location.hash === CURSOR_PAGE_HASH);
     };
-    syncPluginPageState();
-    window.addEventListener('hashchange', syncPluginPageState);
-    return () => window.removeEventListener('hashchange', syncPluginPageState);
-  }, [PLUGIN_PAGE_HASH]);
+    syncPageState();
+    window.addEventListener('hashchange', syncPageState);
+    return () => window.removeEventListener('hashchange', syncPageState);
+  }, [PLUGIN_PAGE_HASH, CURSOR_PAGE_HASH]);
 
   const openPluginPage = () => {
-    if (window.location.hash !== PLUGIN_PAGE_HASH) {
-      window.location.hash = PLUGIN_PAGE_HASH;
-      return;
-    }
-    setIsPluginPage(true);
+    const baseUrl = window.location.href.split('#')[0];
+    window.open(baseUrl + CURSOR_PAGE_HASH, '_blank');
   };
 
   const closePluginPage = () => {
@@ -430,6 +431,7 @@ ${selectedSegments}
     }
   ];
 
+  if (isCursorPage) return <CursorMockPage />;
   if (isPluginPage) return <PluginConnectPage onBack={closePluginPage} />;
 
   return (

@@ -1082,10 +1082,10 @@ export default function PluginConnectPage({ onBack }) {
   const [activeSection, setActiveSection] = useState('settings');
 
   const [segmentSettings, setSegmentSettings] = useState({
-    country: '指定なし',
-    age: '指定なし',
-    gender: '指定なし',
-    itLiteracy: '指定なし',
+    country: '日本',
+    age: '25-34',
+    gender: '女性',
+    itLiteracy: '中',
     occupation: '指定なし',
     education: '指定なし',
     hobby: '指定なし',
@@ -1099,7 +1099,7 @@ export default function PluginConnectPage({ onBack }) {
   );
   const [catalogPage, setCatalogPage] = useState(1);
 
-  const [assignedPersonaIds, setAssignedPersonaIds] = useState([]);
+  const [assignedPersonaIds, setAssignedPersonaIds] = useState(['miyuki-1', 'miyuki-11', 'rin-13']);
   const [activePersonaId, setActivePersonaId] = useState(null);
   const [previewPersonaId, setPreviewPersonaId] = useState(null);
 
