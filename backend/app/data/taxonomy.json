@@ -1,0 +1,571 @@
+{
+  "Demographics": {
+    "Age": [
+      "Specific Age",
+      "Life Stage",
+      "Generation Label",
+      "Perceived Age vs Actual Age"
+    ],
+    "Gender": [
+      "Sex Assigned at Birth",
+      "Gender Identity",
+      "Pronouns",
+      "Gender Expression Style"
+    ],
+    "Location": [
+      "City",
+      "Prefecture",
+      "Urban Rural Type",
+      "Living Arrangement",
+      "Neighborhood Character",
+      "Years at Current Address",
+      "Move History"
+    ],
+    "Family": [
+      "Marital Status",
+      "Children Count",
+      "Children Age Range",
+      "Household Size",
+      "Household Structure",
+      "Pet Ownership",
+      "Multigenerational Living"
+    ],
+    "Nationality": [
+      "Cultural Background",
+      "Language at Home",
+      "Years in Current Region",
+      "Regional Dialect Influence"
+    ]
+  },
+  "Career and Work": {
+    "Employment": [
+      "Industry Sector",
+      "Company Size",
+      "Job Title",
+      "Years of Experience",
+      "Employment Type",
+      "Number of Jobs Held",
+      "Job Prestige Perception",
+      "Remote Work Ratio"
+    ],
+    "Work Style": [
+      "Work Hours Per Week",
+      "Overtime Frequency",
+      "Work Life Balance Attitude",
+      "Commute Method",
+      "Commute Duration",
+      "Desk Setup Quality",
+      "Meeting Load per Week"
+    ],
+    "Income": [
+      "Annual Income Range",
+      "Income Satisfaction",
+      "Side Job Presence",
+      "Side Job Type",
+      "Income Trajectory"
+    ],
+    "Career Outlook": [
+      "Ambition Level",
+      "Job Change Intent",
+      "Skill Development Focus",
+      "Career Goal Horizon",
+      "Management Aspiration",
+      "Retirement Age Goal"
+    ],
+    "Workplace Relations": [
+      "Team Size",
+      "Manager Relationship Quality",
+      "Peer Collaboration Style",
+      "Meeting Frequency",
+      "Workplace Culture Fit",
+      "Union Membership"
+    ],
+    "Work Values": [
+      "Salary vs Fulfillment Priority",
+      "Job Security Importance",
+      "Company Brand Importance",
+      "Social Impact of Work Importance",
+      "Flexibility Importance",
+      "Autonomy vs Structure Preference",
+      "Recognition Need at Work",
+      "Colleague Diversity Importance"
+    ]
+  },
+  "Financial Behavior": {
+    "Spending": [
+      "Monthly Spending Style",
+      "Major Expense Categories",
+      "Impulse Buying Tendency",
+      "Luxury Spending Frequency",
+      "Discount Sensitivity",
+      "Cash vs Card Preference",
+      "Budgeting App Usage"
+    ],
+    "Saving": [
+      "Monthly Savings Rate",
+      "Savings Goals",
+      "Emergency Fund Status",
+      "Savings Account Type",
+      "Automatic Savings Setup"
+    ],
+    "Investment": [
+      "Investment Experience Level",
+      "Risk Tolerance",
+      "Investment Products Used",
+      "Monthly Investment Amount",
+      "Investment Information Sources",
+      "Crypto Interest",
+      "Real Estate Investment Interest"
+    ],
+    "Financial Literacy": [
+      "Self Assessed Knowledge Level",
+      "Financial Planning Habit",
+      "Tax Filing Approach",
+      "Financial Advisor Usage"
+    ],
+    "Debt": [
+      "Loan Types",
+      "Outstanding Debt Level",
+      "Debt Attitude",
+      "Credit Card Usage Style",
+      "Mortgage Status"
+    ],
+    "Insurance": [
+      "Insurance Types Held",
+      "Insurance Review Frequency",
+      "Insurance Switching History"
+    ],
+    "Money Mindset": [
+      "Scarcity vs Abundance Mindset",
+      "Money and Happiness Correlation Belief",
+      "Financial Anxiety Level",
+      "Generosity vs Frugality Balance",
+      "Financial Goal Clarity",
+      "Attitude Toward Inheritance"
+    ]
+  },
+  "Media and Information": {
+    "News Consumption": [
+      "Primary News Source",
+      "Secondary News Source",
+      "News Categories of Interest",
+      "Trust in Mainstream Media",
+      "News Check Frequency per Day",
+      "Breaking News Response Speed",
+      "Fact Checking Habit"
+    ],
+    "SNS Usage": [
+      "Primary Platforms",
+      "Secondary Platforms",
+      "Daily Time Spent on SNS",
+      "Posting Frequency",
+      "Content Type Posted",
+      "Story vs Feed Preference",
+      "Follower Count Range",
+      "DM Usage Frequency",
+      "Hashtag Usage"
+    ],
+    "Content Preferences": [
+      "Preferred Article Length",
+      "Visual vs Text Preference",
+      "Video Consumption Hours per Day",
+      "Podcast Listening Frequency",
+      "Newsletter Subscription Count",
+      "Infographic Preference",
+      "Long Form Journalism Interest"
+    ],
+    "Ad and PR Attitude": [
+      "Ad Tolerance Level",
+      "Trust in Sponsored Content",
+      "Influencer Marketing Attitude",
+      "Ad Blocker Usage",
+      "PR Article Recognition Ability",
+      "Native Advertising Awareness",
+      "Sponsored Post Skip Speed"
+    ],
+    "Search Behavior": [
+      "Search Engine Used",
+      "Search Frequency per Day",
+      "Query Depth",
+      "Trust in Search Results",
+      "Voice Search Usage",
+      "Image Search Usage"
+    ]
+  },
+  "Consumer Behavior": {
+    "Purchase Decision": [
+      "Research Depth Before Purchase",
+      "Review Reliance",
+      "Brand Loyalty Level",
+      "Word of Mouth Influence",
+      "Expert Opinion Reliance",
+      "Trial Before Buy Tendency",
+      "Return Frequency"
+    ],
+    "Online Shopping": [
+      "Monthly Online Shopping Frequency",
+      "Preferred Platforms",
+      "Price Sensitivity",
+      "Free Shipping Importance",
+      "Same Day Delivery Value",
+      "Wishlist Usage",
+      "Subscribe and Save Interest"
+    ],
+    "Offline Shopping": [
+      "Supermarket Visit Frequency",
+      "Department Store Attitude",
+      "Convenience Store Reliance",
+      "Specialty Store Preference",
+      "Browsing for Fun Tendency"
+    ],
+    "Subscription Services": [
+      "Current Subscriptions List",
+      "Monthly Subscription Budget",
+      "Willingness to Pay for Content",
+      "Subscription Cancellation Pattern",
+      "Free Trial Conversion Rate"
+    ],
+    "Brand Attitude": [
+      "Domestic vs Foreign Brand Preference",
+      "Emerging Brand Openness",
+      "Luxury Brand Interest",
+      "Sustainable Brand Premium Willingness",
+      "Brand Storytelling Resonance"
+    ]
+  },
+  "Values and Beliefs": {
+    "Core Values": [
+      "Top Personal Value 1",
+      "Top Personal Value 2",
+      "Top Personal Value 3",
+      "Life Philosophy Statement",
+      "Core Value Consistency in Behavior"
+    ],
+    "Social Issues": [
+      "Social Issue Interest Level",
+      "Specific Causes Supported",
+      "Donation Frequency",
+      "Activism Level",
+      "Volunteer Activity Frequency"
+    ],
+    "Political Orientation": [
+      "General Political Stance",
+      "Voting Behavior",
+      "Policy Priority Area",
+      "Political Discussion Comfort Level"
+    ],
+    "Environmental Awareness": [
+      "Environmental Concern Level",
+      "Eco Friendly Behavior Count",
+      "Carbon Footprint Awareness",
+      "Sustainable Product Preference",
+      "Public Transport Usage for Environment"
+    ],
+    "Religion and Spirituality": [
+      "Religious Affiliation",
+      "Spirituality Importance",
+      "Practice Frequency",
+      "Superstition Level"
+    ],
+    "Work Ethic": [
+      "Effort vs Outcome Balance",
+      "Attitude Toward Overwork",
+      "Meritocracy Belief",
+      "Grit and Perseverance Self Rating"
+    ],
+    "Worldview": [
+      "Optimism vs Pessimism Scale",
+      "Individualism vs Collectivism Lean",
+      "Tradition vs Progress Preference",
+      "Global vs Local Mindset",
+      "Fate vs Agency Belief",
+      "Attitude Toward Uncertainty"
+    ]
+  },
+  "Health and Wellness": {
+    "Physical Health": [
+      "Exercise Frequency per Week",
+      "Exercise Type",
+      "Diet Style",
+      "Health Concern Level",
+      "Body Satisfaction",
+      "Sleep Hours per Night",
+      "Chronic Condition Presence"
+    ],
+    "Mental Health": [
+      "Current Stress Level",
+      "Coping Mechanisms",
+      "Therapy or Counseling Usage",
+      "Burnout History",
+      "Happiness Self Rating",
+      "Anxiety Level",
+      "Mindfulness Practice"
+    ],
+    "Health Information": [
+      "Trust in Health Content Online",
+      "Supplement Usage",
+      "Health App Usage",
+      "Doctor Visit Frequency",
+      "Preventive Health Attitude",
+      "Self Diagnosis Tendency"
+    ],
+    "Food and Drink": [
+      "Cuisine Preferences",
+      "Dietary Restriction",
+      "Dining Out Frequency per Month",
+      "Cooking Frequency per Week",
+      "Cooking Skill Level",
+      "Alcohol Consumption Frequency",
+      "Coffee Tea Preference",
+      "Delivery Service Usage"
+    ],
+    "Beauty and Grooming": [
+      "Skincare Routine Complexity",
+      "Makeup Usage",
+      "Hair Care Investment",
+      "Beauty Budget Monthly",
+      "Salon Visit Frequency",
+      "Natural vs Synthetic Product Preference",
+      "Anti Aging Product Interest",
+      "Fragrance Usage"
+    ]
+  },
+  "Relationships and Social": {
+    "Social Style": [
+      "Introvert Extrovert Scale",
+      "Friend Circle Size",
+      "Social Gathering Frequency",
+      "Preferred Social Setting",
+      "Online vs Offline Social Preference"
+    ],
+    "Communication": [
+      "Preferred Communication Tools",
+      "Response Speed Expectation",
+      "Emoji and Sticker Usage",
+      "Phone Call Comfort Level",
+      "Video Call Comfort Level"
+    ],
+    "Trust": [
+      "Trust in Strangers Scale",
+      "Trust in Government",
+      "Trust in Corporations",
+      "Trust in Online Reviews",
+      "Trust in AI",
+      "Trust in Science"
+    ],
+    "Family Relations": [
+      "Family Contact Frequency",
+      "Family Obligation Attitude",
+      "Parenting Style if Applicable",
+      "Elder Care Involvement"
+    ],
+    "Romantic Relations": [
+      "Relationship Status",
+      "Relationship Duration",
+      "Partner Value Alignment",
+      "Work Life Balance in Relationship"
+    ],
+    "Community": [
+      "Local Community Involvement",
+      "Neighborhood Relations",
+      "Online Community Participation",
+      "Alumni Network Activity",
+      "Industry Association Membership",
+      "Civic Engagement Level"
+    ]
+  },
+  "Hobbies and Lifestyle": {
+    "Indoor Activities": [
+      "Reading Frequency",
+      "Book Genre Preference",
+      "Gaming Frequency",
+      "Game Genre Preference",
+      "Creative Hobbies",
+      "DIY Attitude",
+      "Puzzle and Board Game Interest"
+    ],
+    "Outdoor Activities": [
+      "Sports Participation Type",
+      "Travel Frequency per Year",
+      "Travel Style",
+      "Nature Activity Preference",
+      "Urban Exploration Habit"
+    ],
+    "Entertainment": [
+      "Music Genre Preference",
+      "Live Concert Attendance",
+      "Movie Drama Preference",
+      "Anime Manga Attitude",
+      "Theater Arts Interest",
+      "Comedy vs Drama Preference"
+    ],
+    "Fashion and Appearance": [
+      "Fashion Consciousness",
+      "Clothing Budget Monthly",
+      "Brand Awareness in Fashion",
+      "Grooming Routine Complexity",
+      "Secondhand Clothing Interest"
+    ],
+    "Pets": [
+      "Pet Type",
+      "Pet Spending Monthly",
+      "Pet Social Media Activity"
+    ],
+    "Travel": [
+      "Domestic vs International Travel Ratio",
+      "Accommodation Preference",
+      "Travel Companion Preference",
+      "Travel Planning Style",
+      "Budget per Trip",
+      "Souvenir Buying Habit",
+      "Travel Photography Habit",
+      "Food Tourism Interest",
+      "Cultural Experience Priority",
+      "Adventure vs Relaxation Balance",
+      "Travel Frequency Regret"
+    ]
+  },
+  "Education": {
+    "Academic Background": [
+      "Highest Education Level",
+      "Field of Study",
+      "University Type",
+      "Academic Achievement Self Assessment",
+      "School Club Involvement"
+    ],
+    "Continuous Learning": [
+      "Learning Style Preference",
+      "Current Learning Topics",
+      "Online Course Usage",
+      "Books Read per Year",
+      "Language Learning Status",
+      "Certification Pursuit"
+    ],
+    "Professional Certification": [
+      "Certifications Held",
+      "Certification Relevance to Current Job",
+      "Continuing Education Budget"
+    ],
+    "Teaching and Mentoring": [
+      "Mentorship Role",
+      "Knowledge Sharing Habit",
+      "Teaching Others Comfort Level",
+      "Peer Learning Participation",
+      "Study Group Experience"
+    ]
+  },
+  "Technology": {
+    "Device Usage": [
+      "Primary Device Type",
+      "OS Preference",
+      "Daily Screen Time Hours",
+      "Device Upgrade Frequency",
+      "Number of Devices Owned"
+    ],
+    "Tech Savviness": [
+      "Self Assessed Tech Skill Level",
+      "New Technology Adoption Speed",
+      "Tech Support Role in Social Circle",
+      "Beta Testing Participation"
+    ],
+    "AI Attitude": [
+      "Current AI Tools Used",
+      "AI Trust Level",
+      "AI Concern Areas",
+      "AI in Work Adoption",
+      "AI Creativity Tool Usage",
+      "Chatbot Comfort Level"
+    ],
+    "Privacy and Security": [
+      "Privacy Awareness Level",
+      "VPN Usage",
+      "Password Management Approach",
+      "Data Sharing Comfort Level",
+      "Cookie Consent Behavior"
+    ],
+    "Smart Home": [
+      "Smart Device Count",
+      "IoT Adoption Attitude",
+      "Smart Speaker Usage"
+    ],
+    "Social Media Tech": [
+      "Algorithm Awareness",
+      "Platform Algorithm Trust",
+      "Filter Bubble Awareness",
+      "Digital Detox Frequency",
+      "Screen Time Concern Level",
+      "Notification Management Style",
+      "App Permission Scrutiny"
+    ]
+  },
+  "Life Events and Context": {
+    "Recent Changes": [
+      "Major Life Events Last Two Years",
+      "Current Life Challenge",
+      "Near Term Life Plan",
+      "Upcoming Milestone"
+    ],
+    "Life Satisfaction": [
+      "Overall Life Satisfaction Score",
+      "Primary Area for Improvement",
+      "Sense of Purpose Level",
+      "Work Satisfaction vs Life Satisfaction Balance"
+    ],
+    "Aspirations": [
+      "Dream Lifestyle Description",
+      "Five Year Vision",
+      "Legacy Concern Level",
+      "Bucket List Item"
+    ],
+    "Regrets and Lessons": [
+      "Biggest Past Regret Area",
+      "Key Life Lesson",
+      "Growth Mindset Level",
+      "Resilience After Failure",
+      "Risk Taking History",
+      "Comfort Zone Expansion Willingness"
+    ]
+  },
+  "Medial Specific": {
+    "Article Reading Habits": [
+      "Daily Reading Time Minutes",
+      "Preferred Article Topics",
+      "Article Discovery Method",
+      "Reading Device",
+      "Completion Rate of Long Articles",
+      "Skimming vs Deep Reading Style"
+    ],
+    "Health Information Seeking": [
+      "Medical Article Reading Frequency",
+      "Trust in Medical Journalism",
+      "Self Diagnosis Tendency via Articles",
+      "Doctor Advice vs Online Advice Balance",
+      "Health App Trust Level"
+    ],
+    "Content Engagement": [
+      "Like and Reaction Frequency",
+      "Comment Posting Frequency",
+      "Article Sharing Frequency",
+      "Save for Later Habit",
+      "Quote Sharing Behavior"
+    ],
+    "Medial Usage Pattern": [
+      "Feature Discovery Style",
+      "Push Notification Attitude",
+      "App Check Frequency per Day",
+      "Personalization Feature Openness",
+      "Dark Mode Preference",
+      "Reading List Usage"
+    ],
+    "Health Literacy": [
+      "Medical Terminology Comfort",
+      "Research Paper Reading Ability",
+      "Evidence Based Thinking Level",
+      "Alternative Medicine Openness",
+      "Second Opinion Seeking Habit",
+      "Clinical Trial Awareness",
+      "Peer Health Discussion Frequency",
+      "Medical History Tracking Habit"
+    ]
+  }
+}

@@ -1,14 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowLeft,
-  Brain,
+  ChevronsLeft,
+  ChevronsRight,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Clapperboard,
-  ClipboardList,
-  FlaskConical,
+  FileText,
   Loader2,
-  Map,
+  LogOut,
   Plus,
   Search,
   Send,
@@ -18,474 +17,636 @@ import {
   X,
   Users
 } from 'lucide-react';
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Line,
-  LineChart,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis
-} from 'recharts';
+import { translateTaxonomyLabel } from './taxonomyLabelsJa';
+
+const API_BASE = '';
+
+function getToken() {
+  return localStorage.getItem('token') || sessionStorage.getItem('token') || '';
+}
+function authHeaders(extra = {}) {
+  return { Authorization: `Bearer ${getToken()}`, ...extra };
+}
+
+async function scrapeUrl(url) {
+  const res = await fetch(`${API_BASE}/api/scrape/`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ url }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `スクレイピングに失敗しました（HTTP ${res.status}）`);
+  }
+  return res.json(); // { title, content, url }
+}
+
+async function runSimulation({ articleContent, personaCount = 20, selectedPersonaIds = [], mediaDescription = '' }) {
+  const res = await fetch(`${API_BASE}/api/simulations/`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      article_content: articleContent,
+      persona_count: personaCount,
+      selected_persona_ids: selectedPersonaIds,
+      media_description: mediaDescription || undefined,
+    }),
+  });
+  if (!res.ok) throw new Error(`simulation failed: ${res.status}`);
+  return res.json();
+}
+
+async function fetchSimulation(simulationId) {
+  const res = await fetch(`${API_BASE}/api/simulations/${simulationId}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error(`simulation fetch failed: ${res.status}`);
+  return res.json();
+}
+
+async function fetchSimulationFeedbacks(simulationId) {
+  const res = await fetch(`${API_BASE}/api/simulations/${simulationId}/feedbacks`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error(`feedbacks fetch failed: ${res.status}`);
+  return res.json();
+}
+
+async function fetchSimulationSummary(simulationId) {
+  const res = await fetch(`${API_BASE}/api/simulations/${simulationId}/summary`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+async function fetchPersonaChatSessions() {
+  const res = await fetch(`${API_BASE}/api/persona/chats`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`chat sessions fetch failed: ${res.status}`);
+  return res.json();
+}
+
+async function fetchPersonaChatSession(chatId) {
+  const res = await fetch(`${API_BASE}/api/persona/chats/${chatId}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`chat session fetch failed: ${res.status}`);
+  return res.json();
+}
+
+async function createPersonaChatSession(personaId) {
+  const res = await fetch(`${API_BASE}/api/persona/chats`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ persona_id: personaId }),
+  });
+  if (!res.ok) throw new Error(`chat session create failed: ${res.status}`);
+  return res.json();
+}
+
+async function fetchPersonasByIds(personaIds) {
+  const results = await Promise.all(
+    personaIds.map((id) =>
+      fetch(`${API_BASE}/api/persona-pool/${id}`, { headers: authHeaders() }).then((r) => (r.ok ? r.json() : null))
+    )
+  );
+  const map = {};
+  results.forEach((p) => { if (p) map[p.id] = p; });
+  return map;
+}
+
+function mapApiFeedbackToLocal(apiFeedback, persona = null) {
+  const rawScores = [
+    apiFeedback.score_relevance,
+    apiFeedback.score_credibility,
+    apiFeedback.score_engagement,
+    apiFeedback.score_purchase_intent,
+  ].filter((v) => v != null);
+  const avgScore = rawScores.length > 0 ? rawScores.reduce((s, v) => s + v, 0) / rawScores.length : 3;
+  const score = Math.round(avgScore * 20);
+  const riskLevel = score < 50 ? 'high' : score < 72 ? 'medium' : 'low';
+
+  const reaction = apiFeedback.honest_reaction || '';
+
+  const toLines = (text) => text ? text.split(/\n+/).map((l) => l.trim()).filter(Boolean) : [];
+
+  return {
+    id: apiFeedback.id,
+    personaId: apiFeedback.persona_id,
+    persona,
+    score,
+    riskLevel,
+    summary: reaction.split(/。|\n/)[0] || '',
+    positives: toLines(apiFeedback.what_worked),
+    mediaFit: toLines(apiFeedback.media_fit),
+    titleFeedback: toLines(apiFeedback.title_feedback),
+    actionItems: toLines(apiFeedback.rewrite_suggestion),
+    honestReaction: reaction,
+    createdAt: apiFeedback.created_at || new Date().toISOString(),
+  };
+}
+
+function dbPersonaToDisplay(p) {
+  return {
+    id: p.id,
+    name: p.display_name || `${p.age}歳・${p.gender}`,
+    age: p.age,
+    occupation: p.occupation,
+    gender: p.gender,
+    adAttitude: p.ad_attitude,
+    infoStyle: p.info_style,
+  };
+}
+
+function normalizeTaxonomyValue(value) {
+  if (value == null) return null;
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+
+  if (Array.isArray(value)) {
+    const items = value
+      .map((item) => normalizeTaxonomyValue(item))
+      .filter(Boolean);
+    return items.length > 0 ? items.join('、') : null;
+  }
+
+  if (typeof value === 'object') {
+    const entries = Object.entries(value)
+      .map(([key, entryValue]) => {
+        const normalized = normalizeTaxonomyValue(entryValue);
+        return normalized ? `${translateTaxonomyLabel(key)}: ${normalized}` : null;
+      })
+      .filter(Boolean);
+    return entries.length > 0 ? entries.join(' / ') : null;
+  }
+
+  return String(value);
+}
+
+function getTaxonomyValue(profile, sectionTitle, subcategoryTitle, field) {
+  if (!profile || typeof profile !== 'object') return null;
+
+  const candidates = [
+    profile?.[sectionTitle]?.[subcategoryTitle]?.[field],
+    profile?.[`${sectionTitle} > ${subcategoryTitle} > ${field}`],
+    profile?.[field],
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeTaxonomyValue(candidate);
+    if (normalized) return normalized;
+  }
+
+  return null;
+}
+
+function hasTaxonomyContent(profile) {
+  return TAXONOMY_SECTIONS.some((section) =>
+    section.subcategories.some((sub) =>
+      sub.fields.some((field) => getTaxonomyValue(profile, section.title, sub.title, field))
+    )
+  );
+}
 
 const NAV_ITEMS = [
-  { id: 'settings', label: '設定', icon: Settings },
-  { id: 'survey', label: 'ユーザー調査', icon: ClipboardList },
+  { id: 'articleFeedback', label: '記事のフィードバック', icon: FileText },
   { id: 'persona', label: 'ペルソナ', icon: Users },
-  { id: 'journey', label: 'ジャーニーマップ', icon: Map },
-  { id: 'mentalModel', label: 'メンタル・モデル', icon: Brain },
-  { id: 'storyboard', label: 'ストーリーボード', icon: Clapperboard },
-  { id: 'usability', label: 'ユーザビリティテスト', icon: FlaskConical }
+  { id: 'settings', label: '設定', icon: Settings },
 ];
+const DEFAULT_SECTION_ID = 'articleFeedback';
+const SECTION_QUERY_PARAM = 'menu';
+const NAV_ITEM_IDS = new Set(NAV_ITEMS.map((item) => item.id));
 
-const PERSONA_SEEDS = [
-  {
-    id: 'miyuki',
-    name: '美雪',
-    age: 28,
-    occupation: '経理',
-    country: '日本',
-    gender: '女性',
-    itLiteracy: '中',
-    personality: ['慎重', '時短志向', '実用重視'],
-    value: '業務の手戻りを減らし、短時間で成果を出せることを重視。',
-    interest: '最初は最小入力で開始し、必要に応じて設定を深めたい。',
-    painPoint: '初期設定が複雑だと利用開始前に離脱しやすい。',
-    mockReplies: [
-      '最初にどんな記事が作られるかサンプルで見せてもらえると、安心して設定を進められます。',
-      '承認作業が5分以内に収まるなら、仕事の合間に続けられそうです。',
-      '一度設定すれば自動で回るなら、週1回確認するだけでも運用できます。'
-    ]
-  },
-  {
-    id: 'takuya',
-    name: '拓也',
-    age: 33,
-    occupation: 'バックエンドエンジニア',
-    country: '日本',
-    gender: '男性',
-    itLiteracy: '高',
-    personality: ['合理的', '検証重視', '再現性重視'],
-    value: '権限や挙動が透明で、失敗時にも復旧しやすい設計を好む。',
-    interest: '設定差分と実行ログを明確に確認したい。',
-    painPoint: 'ブラックボックスな推論結果だと信頼して運用できない。',
-    mockReplies: [
-      '記事生成のロジックとSEO設定の詳細を確認できないと、品質の見極めができません。',
-      '自動投稿が失敗した場合のリカバリー設計が先に見えると安心して導入できます。',
-      'APIで既存の分析ツールと連携できるかどうかが、導入判断の分かれ目になります。'
-    ]
-  },
-  {
-    id: 'rin',
-    name: '凛',
-    age: 22,
-    occupation: '大学生',
-    country: '日本',
-    gender: '女性',
-    itLiteracy: '中',
-    personality: ['探究心', '直感重視', '学習中'],
-    value: '難解な専門用語なしで試せることを重視。',
-    interest: 'チュートリアルとサンプルを見ながら触りたい。',
-    painPoint: '空画面で次の行動が分からないと挫折しやすい。',
-    mockReplies: [
-      '最初にサンプル記事を見せてもらえると、どんなものが作れるか掴めます。',
-      'セグメント設定の手順をステップごとに案内してくれると迷わずできそうです。',
-      'AIが勝手に投稿しないよう、承認ステップがあると安心して使えます。'
-    ]
-  },
-  {
-    id: 'yoko',
-    name: '陽子',
-    age: 52,
-    occupation: '看護師',
-    country: '日本',
-    gender: '女性',
-    itLiteracy: '低',
-    personality: ['堅実', '安全志向', '現場優先'],
-    value: '短時間で迷わず操作できる安定性を重視。',
-    interest: '毎回同じ場所に同じ操作があること。',
-    painPoint: '確認が不足している操作は不安で使えない。',
-    mockReplies: [
-      '副業で使いたいけど、設定が難しいと最初の一歩が踏み出せません。',
-      '毎日確認しなくても自動で動いてくれるなら、仕事との両立ができそうです。',
-      '何かあった時にすぐ投稿を止められるボタンがあると、安心して任せられます。'
-    ]
-  },
-  {
-    id: 'sora',
-    name: '蒼',
-    age: 27,
-    occupation: 'SaaS営業',
-    country: '日本',
-    gender: '男性',
-    itLiteracy: '中',
-    personality: ['成果志向', '説明力重視', 'スピード重視'],
-    value: '導入メリットが早く可視化されることを重視。',
-    interest: '社内説明に使えるレポートが欲しい。',
-    painPoint: '価値が見えるまでが遅いと提案機会を逃す。',
-    mockReplies: [
-      '導入後どれくらいで集客効果が出るか、見通しが欲しいです。',
-      '顧客へのアプローチ数増加につながるSEO効果の数値が見えると提案しやすいです。',
-      '上司への説明に使えるレポート出力機能があると、社内導入がスムーズになります。'
-    ]
-  },
-  {
-    id: 'noa',
-    name: 'ノア',
-    age: 19,
-    occupation: '専門学校生',
-    country: '日本',
-    gender: 'ノンバイナリー',
-    itLiteracy: '中',
-    personality: ['挑戦的', '自己表現', 'テンポ重視'],
-    value: '試行錯誤を邪魔しない、軽快な操作体験を重視。',
-    interest: '失敗してもすぐ戻せる安心感が欲しい。',
-    painPoint: 'エラーメッセージが硬いと学習意欲が下がる。',
-    mockReplies: [
-      '思いついたテーマですぐ記事を作れる「オリジナル素材」機能が楽しそうです。',
-      '承認した記事が実際にどこに投稿されるか、リアルタイムで見てみたいです。',
-      'うまくいかなくても設定を変えてまたトライできると、試行錯誤が楽しめます。'
-    ]
-  },
-  {
-    id: 'james',
-    name: 'James',
-    age: 35,
-    occupation: 'Product Manager',
-    country: 'アメリカ',
-    gender: '男性',
-    itLiteracy: '高',
-    personality: ['分析志向', '合意形成', '優先順位重視'],
-    value: '意思決定の根拠とトレードオフを明確にしたい。',
-    interest: 'ペルソナ差分を比較して議論材料にしたい。',
-    painPoint: '推奨理由が曖昧だとチーム合意を得づらい。',
-    mockReplies: [
-      'どのセグメントへの記事が最もコンバージョンに寄与するか、比較データが欲しいです。',
-      'AI生成記事のブランドトーン一貫性を確認できる仕組みがないと、運用に不安が残ります。',
-      '複数プラットフォームへの投稿スケジュールを一元管理できる画面が必要です。'
-    ]
-  },
-  {
-    id: 'linh',
-    name: 'Linh',
-    age: 30,
-    occupation: 'カスタマーサポート',
-    country: '東南アジア',
-    gender: '女性',
-    itLiteracy: '中',
-    personality: ['共感力', '運用重視', '現実的'],
-    value: '問い合わせ対応が減る、分かりやすい導線を重視。',
-    interest: '自己解決しやすいヘルプ導線を最初から設計したい。',
-    painPoint: 'FAQにたどり着けないとサポート負荷が急増する。',
-    mockReplies: [
-      '「広める対象」の入力欄に何を書けばいいか分からないというお問い合わせが多そうです。',
-      'AIが生成した記事の品質に問題があった時の報告・修正フローが見えないと不安です。',
-      'オンボーディング完了後に「次に何をすれば良いか」が示されないと離脱が増えそうです。'
-    ]
-  },
-  {
-    id: 'emma',
-    name: 'Emma',
-    age: 41,
-    occupation: 'HR Manager',
-    country: 'ヨーロッパ',
-    gender: '女性',
-    itLiteracy: '中',
-    personality: ['運用管理', 'リスク回避', '標準化'],
-    value: '監査対応に耐える履歴と権限管理を重視。',
-    interest: '誰が何を変更したかを追跡したい。',
-    painPoint: '共有運用時に責任境界が曖昧だと導入できない。',
-    mockReplies: [
-      'どのメンバーがどの記事を承認したか、変更履歴が追えないと社内管理ができません。',
-      'チームメンバーごとに承認・編集・閲覧の権限を分けられると運用しやすくなります。',
-      '記事の承認フローをカスタマイズできる仕組みがないと、複数人での運用が難しいです。'
-    ]
-  },
-  {
-    id: 'hans',
-    name: 'Hans',
-    age: 48,
-    occupation: '製造ライン管理者',
-    country: 'ヨーロッパ',
-    gender: '男性',
-    itLiteracy: '低',
-    personality: ['慎重', '現場適応', '再現重視'],
-    value: '現場で止まらないこと、引き継ぎやすいことを重視。',
-    interest: '通信不安定でも最低限の操作は継続したい。',
-    painPoint: '途中入力が消えると現場での信用を失う。',
-    mockReplies: [
-      '記事の自動投稿がいつ・どこに行われたか、後から確認できないと管理が困難です。',
-      '途中まで作った記事の下書きが消えてしまうと、作業のやり直しが発生して困ります。',
-      '担当者が変わっても引き継げるよう、設定内容と運用履歴が一目で分かると助かります。'
-    ]
-  }
-];
-
-const SEGMENT_PROFILE_BY_SEED = {
-  miyuki: {
-    education: '大学卒',
-    hobby: '旅行',
-    family: '夫婦のみ',
-    environment: '都市部',
-    commute: '公共交通機関',
-    driving: 'ほとんど運転しない'
-  },
-  takuya: {
-    education: '大学院卒',
-    hobby: 'ゲーム',
-    family: '単身',
-    environment: '都市部',
-    commute: 'リモート中心',
-    driving: '運転しない'
-  },
-  rin: {
-    education: '在学中',
-    hobby: '音楽',
-    family: '親と同居',
-    environment: '都市部',
-    commute: '公共交通機関',
-    driving: '運転しない'
-  },
-  yoko: {
-    education: '専門学校卒',
-    hobby: '料理',
-    family: '子どもあり',
-    environment: '郊外',
-    commute: '自動車',
-    driving: '毎日運転する'
-  },
-  sora: {
-    education: '大学卒',
-    hobby: '運動',
-    family: '単身',
-    environment: '都市部',
-    commute: '公共交通機関',
-    driving: '週に数回運転する'
-  },
-  noa: {
-    education: '在学中',
-    hobby: 'ゲーム',
-    family: '親と同居',
-    environment: '郊外',
-    commute: '自転車',
-    driving: '運転しない'
-  },
-  james: {
-    education: '大学院卒',
-    hobby: '運動',
-    family: '子どもあり',
-    environment: '郊外',
-    commute: '自動車',
-    driving: '週に数回運転する'
-  },
-  linh: {
-    education: '大学卒',
-    hobby: '料理',
-    family: '子どもあり',
-    environment: '都市部',
-    commute: '公共交通機関',
-    driving: 'ほとんど運転しない'
-  },
-  emma: {
-    education: '大学院卒',
-    hobby: '読書',
-    family: '夫婦のみ',
-    environment: '郊外',
-    commute: '自動車',
-    driving: '週に数回運転する'
-  },
-  hans: {
-    education: '高校卒',
-    hobby: '運動',
-    family: '子どもあり',
-    environment: '地方',
-    commute: '自動車',
-    driving: '毎日運転する'
-  }
-};
-
-const TOTAL_PERSONA_COUNT = 10000;
 const PERSONAS_PER_PAGE = 24;
 const PAGE_WINDOW_SIZE = 7;
 
-const QUESTION_TYPES = [
-  { value: 'single', label: '単一選択' },
-  { value: 'multi', label: '複数選択' },
-  { value: 'rating', label: '評価スケール (1–5)' },
-  { value: 'text', label: '自由記述' }
-];
+const BUTTON_BASE = 'inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50';
+const BUTTON_PRIMARY_CLASS = `${BUTTON_BASE} gap-1.5 bg-primary px-3 py-2 text-primary-foreground hover:opacity-90`;
+const BUTTON_SECONDARY_CLASS = `${BUTTON_BASE} gap-1.5 border border-border bg-muted px-3 py-2 text-foreground hover:bg-accent`;
+const BUTTON_TERTIARY_CLASS = `${BUTTON_BASE} gap-1.5 border border-border bg-card px-3 py-2 text-foreground hover:bg-accent`;
+const SELECT_CLASS = 'w-full appearance-none rounded-md border border-border bg-muted px-3 py-2 pr-10 text-sm text-foreground focus:border-ring focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
+const TEXT_INPUT_CLASS = 'w-full rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none';
 
-const SURVEY_CHART_COLORS = ['#047857', '#3b82f6', '#f59e0b', '#e05252', '#8b5cf6', '#10b981'];
-
-const TEXT_THEME_PRESETS = [
-  ['操作の簡略化', 'ヘルプ・ガイドの充実', '処理速度の改善', 'UIの視認性向上', 'モバイル対応', 'その他'],
-  ['コスト削減', '機能の充実', 'サポート改善', 'セキュリティ強化', 'パフォーマンス向上', 'その他'],
-  ['使いやすさ向上', 'デザイン改善', '通知設定の改善', 'データ管理', '外部連携機能', 'その他']
-];
-
-function buildMockSurveyResults(questions, totalRespondents) {
-  return questions.map((q, qIdx) => {
-    const shift = qIdx * 0.15;
-    if (q.type === 'single') {
-      const opts = q.options.filter((o) => o.trim());
-      if (!opts.length) return { ...q, chartData: [] };
-      const weights = opts.map((_, i) => Math.max(5, 50 - i * (11 + shift * 3)));
-      const sum = weights.reduce((a, b) => a + b, 0);
-      return {
-        ...q,
-        chartData: opts.map((name, i) => ({
-          name,
-          count: Math.round((weights[i] / sum) * totalRespondents),
-          pct: Math.round((weights[i] / sum) * 100)
-        }))
-      };
-    }
-    if (q.type === 'multi') {
-      const opts = q.options.filter((o) => o.trim());
-      if (!opts.length) return { ...q, chartData: [] };
-      return {
-        ...q,
-        chartData: opts.map((name, i) => {
-          const pct = Math.max(10, Math.round(72 - i * (11 + shift * 5)));
-          return { name, count: Math.round((totalRespondents * pct) / 100), pct };
-        })
-      };
-    }
-    if (q.type === 'rating') {
-      const base = [0.04, 0.09, 0.17, 0.38, 0.32];
-      const chartData = [1, 2, 3, 4, 5].map((n, i) => ({
-        name: `${n}点`,
-        count: Math.round(totalRespondents * Math.max(0.02, base[i] + (shift - 0.075) * (i - 2) * 0.04))
-      }));
-      const totalCount = chartData.reduce((s, d) => s + d.count, 0);
-      const avg = chartData.reduce((s, d) => s + Number(d.name[0]) * d.count, 0) / totalCount;
-      return { ...q, chartData, avg: avg.toFixed(1) };
-    }
-    if (q.type === 'text') {
-      const themes = TEXT_THEME_PRESETS[qIdx % TEXT_THEME_PRESETS.length];
-      const weights = [0.32, 0.23, 0.17, 0.13, 0.09, 0.06];
-      return {
-        ...q,
-        chartData: themes.map((name, i) => ({
-          name,
-          count: Math.round(totalRespondents * (weights[i] ?? 0.05))
-        }))
-      };
-    }
-    return { ...q, chartData: [] };
-  });
-}
-
-function buildRespondentAnswers(result, samplePersonas) {
-  return samplePersonas.map((persona) => {
-    const seed = persona.serial ?? 1;
-    let answer = '';
-    if (result.type === 'single') {
-      const d = result.chartData;
-      if (d.length === 0) { answer = '-'; }
-      else { answer = d[seed % d.length]?.name ?? '-'; }
-    } else if (result.type === 'multi') {
-      const d = result.chartData;
-      const picks = d.filter((_, i) => (seed + i) % 3 !== 0).slice(0, 3);
-      answer = picks.length > 0 ? picks.map((p) => p.name).join('、') : '-';
-    } else if (result.type === 'rating') {
-      const base = persona.itLiteracy === '高' ? 4 : persona.itLiteracy === '低' ? 2 : 3;
-      const rating = Math.min(5, Math.max(1, base + ((seed % 3) - 1)));
-      answer = `${rating} 点`;
-    } else if (result.type === 'text') {
-      const d = result.chartData;
-      const theme = d.length > 0 ? (d[seed % d.length]?.name ?? 'その他') : 'その他';
-      const hint = persona.painPoint ? persona.painPoint.slice(0, 20) : '';
-      answer = `${theme}が課題です。${hint ? hint + '…' : ''}`;
-    }
-    return { persona, answer };
-  });
-}
-
-const PROJECT_CONTEXT_SOURCES = {
-  readme: 'README: Medialは広めたい対象を入力するだけでメディアを自動生成・運用・改善するSaaSツール。',
-  codebase: 'Service: 記事自動生成・複数プラットフォーム自動投稿・AI編集部・分析改善の機能を持つ。'
-};
-
-const COUNTRY_OPTIONS = ['指定なし', '日本', 'アメリカ', '東南アジア', 'ヨーロッパ'];
 const AGE_OPTIONS = ['指定なし', '18-24', '25-34', '35-44', '45+'];
 const GENDER_OPTIONS = ['指定なし', '女性', '男性', 'ノンバイナリー'];
-const IT_OPTIONS = ['指定なし', '低', '中', '高'];
-const OCCUPATION_OPTIONS = ['指定なし', ...Array.from(new Set(PERSONA_SEEDS.map((seed) => seed.occupation)))];
-const EDUCATION_OPTIONS = [
-  '指定なし',
-  ...Array.from(new Set(Object.values(SEGMENT_PROFILE_BY_SEED).map((profile) => profile.education)))
+const LOCATION_OPTIONS = [
+  { value: '指定なし', label: '指定なし' },
+  { value: 'metro', label: '首都圏・大都市圏' },
+  { value: 'regional', label: '地方都市' },
+  { value: 'rural', label: '郊外・地方' },
 ];
-const HOBBY_OPTIONS = ['指定なし', ...Array.from(new Set(Object.values(SEGMENT_PROFILE_BY_SEED).map((profile) => profile.hobby)))];
-const FAMILY_OPTIONS = ['指定なし', ...Array.from(new Set(Object.values(SEGMENT_PROFILE_BY_SEED).map((profile) => profile.family)))];
-const ENVIRONMENT_OPTIONS = [
-  '指定なし',
-  ...Array.from(new Set(Object.values(SEGMENT_PROFILE_BY_SEED).map((profile) => profile.environment)))
+const PREFECTURE_OPTIONS = [
+  '北海道', '青森県', '岩手県', '宮城県', '秋田県', '山形県', '福島県',
+  '茨城県', '栃木県', '群馬県', '埼玉県', '千葉県', '東京都', '神奈川県',
+  '新潟県', '富山県', '石川県', '福井県', '山梨県', '長野県',
+  '岐阜県', '静岡県', '愛知県', '三重県',
+  '滋賀県', '京都府', '大阪府', '兵庫県', '奈良県', '和歌山県',
+  '鳥取県', '島根県', '岡山県', '広島県', '山口県',
+  '徳島県', '香川県', '愛媛県', '高知県',
+  '福岡県', '佐賀県', '長崎県', '熊本県', '大分県', '宮崎県', '鹿児島県',
+  '沖縄県',
 ];
-const COMMUTE_OPTIONS = ['指定なし', ...Array.from(new Set(Object.values(SEGMENT_PROFILE_BY_SEED).map((profile) => profile.commute)))];
-const DRIVING_OPTIONS = ['指定なし', ...Array.from(new Set(Object.values(SEGMENT_PROFILE_BY_SEED).map((profile) => profile.driving)))];
-const ADVANCED_PERSONA_SECTIONS = [
+const DEFAULT_SEGMENT_SETTINGS = {
+  age: '指定なし',
+  gender: '指定なし',
+  location: '指定なし',
+};
+const DEFAULT_GEN_FORM = {
+  age_min: '',
+  age_max: '',
+  gender: '',
+  region_type: '',
+  prefectures: [],
+  occupations: [],
+  segments: [],
+  count: 1,
+  attribute_richness: 200,
+};
+
+const TAXONOMY_SECTIONS = [
   {
-    title: '1. 心理・行動特性',
-    fields: [
-      { key: 'mentalModel', label: 'メンタルモデル' },
-      { key: 'decisionLogic', label: '意思決定ロジック' },
-      { key: 'cognitiveLoadTolerance', label: '認知的負荷への耐性' },
-      { key: 'behaviorTrigger', label: '行動のトリガー' }
-    ]
+    title: 'Demographics',
+    subcategories: [
+      { title: 'Age', fields: ['Specific Age', 'Life Stage', 'Generation Label', 'Perceived Age vs Actual Age'] },
+      { title: 'Gender', fields: ['Gender Identity', 'Pronouns', 'Gender Expression Style'] },
+      { title: 'Location', fields: ['City', 'Prefecture', 'Urban Rural Type', 'Living Arrangement', 'Neighborhood Character', 'Years at Current Address', 'Move History'] },
+      { title: 'Family', fields: ['Marital Status', 'Children Count', 'Children Age Range', 'Household Size', 'Household Structure', 'Pet Ownership', 'Multigenerational Living'] },
+      { title: 'Nationality', fields: ['Cultural Background', 'Language at Home', 'Years in Current Region', 'Regional Dialect Influence'] },
+    ],
   },
   {
-    title: '2. 文脈と環境',
-    fields: [
-      { key: 'usageEnvironment', label: '物理的・デジタル環境' },
-      { key: 'deviceEcosystem', label: 'マルチデバイス連携' },
-      { key: 'timeConstraint', label: '時間の制約' },
-      { key: 'stakeholders', label: '周囲のステークホルダー' }
-    ]
+    title: 'Career and Work',
+    subcategories: [
+      { title: 'Employment', fields: ['Industry Sector', 'Company Size', 'Job Title', 'Years of Experience', 'Employment Type', 'Number of Jobs Held', 'Job Prestige Perception', 'Remote Work Ratio'] },
+      { title: 'Work Style', fields: ['Work Hours Per Week', 'Overtime Frequency', 'Work Life Balance Attitude', 'Commute Method', 'Commute Duration', 'Desk Setup Quality', 'Meeting Load per Week'] },
+      { title: 'Income', fields: ['Annual Income Range', 'Income Satisfaction', 'Side Job Presence', 'Side Job Type', 'Income Trajectory'] },
+      { title: 'Career Outlook', fields: ['Ambition Level', 'Job Change Intent', 'Skill Development Focus', 'Career Goal Horizon', 'Management Aspiration', 'Retirement Age Goal'] },
+      { title: 'Workplace Relations', fields: ['Team Size', 'Manager Relationship Quality', 'Peer Collaboration Style', 'Meeting Frequency', 'Workplace Culture Fit', 'Union Membership'] },
+      { title: 'Work Values', fields: ['Salary vs Fulfillment Priority', 'Job Security Importance', 'Company Brand Importance', 'Social Impact of Work Importance', 'Flexibility Importance', 'Autonomy vs Structure Preference', 'Recognition Need at Work', 'Colleague Diversity Importance'] },
+    ],
   },
   {
-    title: '3. リテラシーと技術スタック',
-    fields: [
-      { key: 'aiLiteracy', label: 'AIリテラシー' },
-      { key: 'privacyPolicy', label: 'プライバシー・ポリシー' },
-      { key: 'informationChannel', label: '情報の収集経路' }
-    ]
+    title: 'Financial Behavior',
+    subcategories: [
+      { title: 'Spending', fields: ['Monthly Spending Style', 'Major Expense Categories', 'Impulse Buying Tendency', 'Luxury Spending Frequency', 'Discount Sensitivity', 'Cash vs Card Preference', 'Budgeting App Usage'] },
+      { title: 'Saving', fields: ['Monthly Savings Rate', 'Savings Goals', 'Emergency Fund Status', 'Savings Account Type', 'Automatic Savings Setup'] },
+      { title: 'Investment', fields: ['Investment Experience Level', 'Risk Tolerance', 'Investment Products Used', 'Monthly Investment Amount', 'Investment Information Sources', 'Crypto Interest', 'Real Estate Investment Interest'] },
+      { title: 'Financial Literacy', fields: ['Self Assessed Knowledge Level', 'Financial Planning Habit', 'Tax Filing Approach', 'Financial Advisor Usage'] },
+      { title: 'Debt', fields: ['Loan Types', 'Outstanding Debt Level', 'Debt Attitude', 'Credit Card Usage Style', 'Mortgage Status'] },
+      { title: 'Insurance', fields: ['Insurance Types Held', 'Insurance Review Frequency', 'Insurance Switching History'] },
+      { title: 'Money Mindset', fields: ['Scarcity vs Abundance Mindset', 'Money and Happiness Correlation Belief', 'Financial Anxiety Level', 'Generosity vs Frugality Balance', 'Financial Goal Clarity', 'Attitude Toward Inheritance'] },
+    ],
   },
   {
-    title: '4. 価値観とインクルーシブ要素',
-    fields: [
-      { key: 'ethicsValue', label: '倫理性・社会的価値観' },
-      { key: 'accessibilityNeed', label: 'アクセシビリティ配慮' },
-      { key: 'wellbeing', label: 'ウェルビーイングの定義' }
-    ]
+    title: 'Media and Information',
+    subcategories: [
+      { title: 'News Consumption', fields: ['Primary News Source', 'Secondary News Source', 'News Categories of Interest', 'Trust in Mainstream Media', 'News Check Frequency per Day', 'Breaking News Response Speed', 'Fact Checking Habit'] },
+      { title: 'SNS Usage', fields: ['Primary Platforms', 'Secondary Platforms', 'Daily Time Spent on SNS', 'Posting Frequency', 'Content Type Posted', 'Story vs Feed Preference', 'Follower Count Range', 'DM Usage Frequency', 'Hashtag Usage'] },
+      { title: 'Content Preferences', fields: ['Preferred Article Length', 'Visual vs Text Preference', 'Video Consumption Hours per Day', 'Podcast Listening Frequency', 'Newsletter Subscription Count', 'Infographic Preference', 'Long Form Journalism Interest'] },
+      { title: 'Ad and PR Attitude', fields: ['Ad Tolerance Level', 'Trust in Sponsored Content', 'Influencer Marketing Attitude', 'Ad Blocker Usage', 'PR Article Recognition Ability', 'Native Advertising Awareness', 'Sponsored Post Skip Speed'] },
+      { title: 'Search Behavior', fields: ['Search Engine Used', 'Search Frequency per Day', 'Query Depth', 'Trust in Search Results', 'Voice Search Usage', 'Image Search Usage'] },
+    ],
   },
   {
-    title: '5. Jobs to be Done',
-    fields: [
-      { key: 'expectedOutcome', label: '期待するアウトカム' },
-      { key: 'alternativeSolution', label: '現状の代替手段' }
-    ]
-  }
+    title: 'Consumer Behavior',
+    subcategories: [
+      { title: 'Purchase Decision', fields: ['Research Depth Before Purchase', 'Review Reliance', 'Brand Loyalty Level', 'Word of Mouth Influence', 'Expert Opinion Reliance', 'Trial Before Buy Tendency', 'Return Frequency'] },
+      { title: 'Online Shopping', fields: ['Monthly Online Shopping Frequency', 'Preferred Platforms', 'Price Sensitivity', 'Free Shipping Importance', 'Same Day Delivery Value', 'Wishlist Usage', 'Subscribe and Save Interest'] },
+      { title: 'Offline Shopping', fields: ['Supermarket Visit Frequency', 'Department Store Attitude', 'Convenience Store Reliance', 'Specialty Store Preference', 'Browsing for Fun Tendency'] },
+      { title: 'Subscription Services', fields: ['Current Subscriptions List', 'Monthly Subscription Budget', 'Willingness to Pay for Content', 'Subscription Cancellation Pattern', 'Free Trial Conversion Rate'] },
+      { title: 'Brand Attitude', fields: ['Domestic vs Foreign Brand Preference', 'Emerging Brand Openness', 'Luxury Brand Interest', 'Sustainable Brand Premium Willingness', 'Brand Storytelling Resonance'] },
+    ],
+  },
+  {
+    title: 'Values and Beliefs',
+    subcategories: [
+      { title: 'Core Values', fields: ['Top Personal Value 1', 'Top Personal Value 2', 'Top Personal Value 3', 'Life Philosophy Statement', 'Core Value Consistency in Behavior'] },
+      { title: 'Social Issues', fields: ['Social Issue Interest Level', 'Specific Causes Supported', 'Donation Frequency', 'Activism Level', 'Volunteer Activity Frequency'] },
+      { title: 'Political Orientation', fields: ['General Political Stance', 'Voting Behavior', 'Policy Priority Area', 'Political Discussion Comfort Level'] },
+      { title: 'Environmental Awareness', fields: ['Environmental Concern Level', 'Eco Friendly Behavior Count', 'Carbon Footprint Awareness', 'Sustainable Product Preference', 'Public Transport Usage for Environment'] },
+      { title: 'Religion and Spirituality', fields: ['Religious Affiliation', 'Spirituality Importance', 'Practice Frequency', 'Superstition Level'] },
+      { title: 'Work Ethic', fields: ['Effort vs Outcome Balance', 'Attitude Toward Overwork', 'Meritocracy Belief', 'Grit and Perseverance Self Rating'] },
+      { title: 'Worldview', fields: ['Optimism vs Pessimism Scale', 'Individualism vs Collectivism Lean', 'Tradition vs Progress Preference', 'Global vs Local Mindset', 'Fate vs Agency Belief', 'Attitude Toward Uncertainty'] },
+    ],
+  },
+  {
+    title: 'Health and Wellness',
+    subcategories: [
+      { title: 'Physical Health', fields: ['Exercise Frequency per Week', 'Exercise Type', 'Diet Style', 'Health Concern Level', 'Body Satisfaction', 'Sleep Hours per Night', 'Chronic Condition Presence'] },
+      { title: 'Mental Health', fields: ['Current Stress Level', 'Coping Mechanisms', 'Therapy or Counseling Usage', 'Burnout History', 'Happiness Self Rating', 'Anxiety Level', 'Mindfulness Practice'] },
+      { title: 'Health Information', fields: ['Trust in Health Content Online', 'Supplement Usage', 'Health App Usage', 'Doctor Visit Frequency', 'Preventive Health Attitude', 'Self Diagnosis Tendency'] },
+      { title: 'Food and Drink', fields: ['Cuisine Preferences', 'Dietary Restriction', 'Dining Out Frequency per Month', 'Cooking Frequency per Week', 'Cooking Skill Level', 'Alcohol Consumption Frequency', 'Coffee Tea Preference', 'Delivery Service Usage'] },
+      { title: 'Beauty and Grooming', fields: ['Skincare Routine Complexity', 'Makeup Usage', 'Hair Care Investment', 'Beauty Budget Monthly', 'Salon Visit Frequency', 'Natural vs Synthetic Product Preference', 'Anti Aging Product Interest', 'Fragrance Usage'] },
+    ],
+  },
+  {
+    title: 'Relationships and Social',
+    subcategories: [
+      { title: 'Social Style', fields: ['Introvert Extrovert Scale', 'Friend Circle Size', 'Social Gathering Frequency', 'Preferred Social Setting', 'Online vs Offline Social Preference'] },
+      { title: 'Communication', fields: ['Preferred Communication Tools', 'Response Speed Expectation', 'Emoji and Sticker Usage', 'Phone Call Comfort Level', 'Video Call Comfort Level'] },
+      { title: 'Trust', fields: ['Trust in Strangers Scale', 'Trust in Government', 'Trust in Corporations', 'Trust in Online Reviews', 'Trust in AI', 'Trust in Science'] },
+      { title: 'Family Relations', fields: ['Family Contact Frequency', 'Family Obligation Attitude', 'Parenting Style if Applicable', 'Elder Care Involvement'] },
+      { title: 'Romantic Relations', fields: ['Relationship Status', 'Relationship Duration', 'Partner Value Alignment', 'Work Life Balance in Relationship'] },
+      { title: 'Community', fields: ['Local Community Involvement', 'Neighborhood Relations', 'Online Community Participation', 'Alumni Network Activity', 'Industry Association Membership', 'Civic Engagement Level'] },
+    ],
+  },
+  {
+    title: 'Hobbies and Lifestyle',
+    subcategories: [
+      { title: 'Indoor Activities', fields: ['Reading Frequency', 'Book Genre Preference', 'Gaming Frequency', 'Game Genre Preference', 'Creative Hobbies', 'DIY Attitude', 'Puzzle and Board Game Interest'] },
+      { title: 'Outdoor Activities', fields: ['Sports Participation Type', 'Travel Frequency per Year', 'Travel Style', 'Nature Activity Preference', 'Urban Exploration Habit'] },
+      { title: 'Entertainment', fields: ['Music Genre Preference', 'Live Concert Attendance', 'Movie Drama Preference', 'Anime Manga Attitude', 'Theater Arts Interest', 'Comedy vs Drama Preference'] },
+      { title: 'Fashion and Appearance', fields: ['Fashion Consciousness', 'Clothing Budget Monthly', 'Brand Awareness in Fashion', 'Grooming Routine Complexity', 'Secondhand Clothing Interest'] },
+      { title: 'Pets', fields: ['Pet Type', 'Pet Spending Monthly', 'Pet Social Media Activity'] },
+      { title: 'Travel', fields: ['Domestic vs International Travel Ratio', 'Accommodation Preference', 'Travel Companion Preference', 'Travel Planning Style', 'Budget per Trip', 'Souvenir Buying Habit', 'Travel Photography Habit', 'Food Tourism Interest', 'Cultural Experience Priority', 'Adventure vs Relaxation Balance', 'Travel Frequency Regret'] },
+    ],
+  },
+  {
+    title: 'Education',
+    subcategories: [
+      { title: 'Academic Background', fields: ['Highest Education Level', 'Field of Study', 'University Type', 'Academic Achievement Self Assessment', 'School Club Involvement'] },
+      { title: 'Continuous Learning', fields: ['Learning Style Preference', 'Current Learning Topics', 'Online Course Usage', 'Books Read per Year', 'Language Learning Status', 'Certification Pursuit'] },
+      { title: 'Professional Certification', fields: ['Certifications Held', 'Certification Relevance to Current Job', 'Continuing Education Budget'] },
+      { title: 'Teaching and Mentoring', fields: ['Mentorship Role', 'Knowledge Sharing Habit', 'Teaching Others Comfort Level', 'Peer Learning Participation', 'Study Group Experience'] },
+    ],
+  },
+  {
+    title: 'Technology',
+    subcategories: [
+      { title: 'Device Usage', fields: ['Primary Device Type', 'OS Preference', 'Daily Screen Time Hours', 'Device Upgrade Frequency', 'Number of Devices Owned'] },
+      { title: 'Tech Savviness', fields: ['Self Assessed Tech Skill Level', 'New Technology Adoption Speed', 'Tech Support Role in Social Circle', 'Beta Testing Participation'] },
+      { title: 'AI Attitude', fields: ['Current AI Tools Used', 'AI Trust Level', 'AI Concern Areas', 'AI in Work Adoption', 'AI Creativity Tool Usage', 'Chatbot Comfort Level'] },
+      { title: 'Privacy and Security', fields: ['Privacy Awareness Level', 'VPN Usage', 'Password Management Approach', 'Data Sharing Comfort Level', 'Cookie Consent Behavior'] },
+      { title: 'Smart Home', fields: ['Smart Device Count', 'IoT Adoption Attitude', 'Smart Speaker Usage'] },
+      { title: 'Social Media Tech', fields: ['Algorithm Awareness', 'Platform Algorithm Trust', 'Filter Bubble Awareness', 'Digital Detox Frequency', 'Screen Time Concern Level', 'Notification Management Style', 'App Permission Scrutiny'] },
+    ],
+  },
+  {
+    title: 'Life Events and Context',
+    subcategories: [
+      { title: 'Recent Changes', fields: ['Major Life Events Last Two Years', 'Current Life Challenge', 'Near Term Life Plan', 'Upcoming Milestone'] },
+      { title: 'Life Satisfaction', fields: ['Overall Life Satisfaction Score', 'Primary Area for Improvement', 'Sense of Purpose Level', 'Work Satisfaction vs Life Satisfaction Balance'] },
+      { title: 'Aspirations', fields: ['Dream Lifestyle Description', 'Five Year Vision', 'Legacy Concern Level', 'Bucket List Item'] },
+      { title: 'Regrets and Lessons', fields: ['Biggest Past Regret Area', 'Key Life Lesson', 'Growth Mindset Level', 'Resilience After Failure', 'Risk Taking History', 'Comfort Zone Expansion Willingness'] },
+    ],
+  },
+  {
+    title: 'Medial Specific',
+    subcategories: [
+      { title: 'Article Reading Habits', fields: ['Daily Reading Time Minutes', 'Preferred Article Topics', 'Article Discovery Method', 'Reading Device', 'Completion Rate of Long Articles', 'Skimming vs Deep Reading Style'] },
+      { title: 'Health Information Seeking', fields: ['Medical Article Reading Frequency', 'Trust in Medical Journalism', 'Self Diagnosis Tendency via Articles', 'Doctor Advice vs Online Advice Balance', 'Health App Trust Level'] },
+      { title: 'Content Engagement', fields: ['Like and Reaction Frequency', 'Comment Posting Frequency', 'Article Sharing Frequency', 'Save for Later Habit', 'Quote Sharing Behavior'] },
+      { title: 'Medial Usage Pattern', fields: ['Feature Discovery Style', 'Push Notification Attitude', 'App Check Frequency per Day', 'Personalization Feature Openness', 'Dark Mode Preference', 'Reading List Usage'] },
+      { title: 'Health Literacy', fields: ['Medical Terminology Comfort', 'Research Paper Reading Ability', 'Evidence Based Thinking Level', 'Alternative Medicine Openness', 'Second Opinion Seeking Habit', 'Clinical Trial Awareness', 'Peer Health Discussion Frequency', 'Medical History Tracking Habit'] },
+    ],
+  },
 ];
 
 const TOOLTIP_STYLE = {
-  backgroundColor: '#252526',
-  border: '1px solid #333333',
+  backgroundColor: 'var(--popover)',
+  border: '1px solid var(--border)',
   borderRadius: '8px',
-  color: '#cccccc',
+  color: 'var(--popover-foreground)',
   fontSize: '12px'
 };
 
-const JOURNEY_PHASES = ['認知・検討', 'オンボーディング', '初回記事承認', '日次運用', '分析・拡大'];
-const JOURNEY_ROW_HEADER_WIDTH = 180;
-const JOURNEY_PHASE_COLUMN_MIN_WIDTH = 160;
-const JOURNEY_MIN_WIDTH = JOURNEY_ROW_HEADER_WIDTH + JOURNEY_PHASE_COLUMN_MIN_WIDTH * JOURNEY_PHASES.length;
-const ADVANCED_PROFILE_LOADING_DELAY = 1200;
+const ARTICLE_FEEDBACK_VIEWS = {
+  LIST: 'list',
+  CREATE: 'create',
+  RESULTS: 'results',
+  DETAIL: 'detail'
+};
+const ARTICLE_INPUT_MODES = {
+  URL: 'url',
+  CONTENT: 'content'
+};
+const ARTICLE_TABLE_PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
+
+function createEmptyArticleForm() {
+  return {
+    title: '',
+    body: '',
+    url: ''
+  };
+}
+
+function createLocalArticleId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `article-${crypto.randomUUID()}`;
+  }
+  return `article-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function normalizePersonaSnapshot(persona) {
+  if (!persona || typeof persona !== 'object') return null;
+  return {
+    id: persona.id || null,
+    name: persona.name || persona.display_name || '不明なペルソナ',
+    display_name: persona.display_name || persona.name || '不明なペルソナ',
+    age: persona.age ?? null,
+    occupation: persona.occupation || '',
+    gender: persona.gender || '',
+    adAttitude: persona.adAttitude || persona.ad_attitude || '',
+    infoStyle: persona.infoStyle || persona.info_style || '',
+    narrative: persona.narrative || '',
+    one_line_summary: persona.one_line_summary || '',
+  };
+}
+
+function normalizePersonaSnapshots(personas) {
+  if (!Array.isArray(personas)) return [];
+  return personas.map(normalizePersonaSnapshot).filter(Boolean);
+}
+
+function normalizeFeedback(feedback) {
+  if (!feedback || typeof feedback !== 'object') return null;
+  return {
+    id: feedback.id || `feedback-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    personaId: feedback.personaId || feedback.persona_id || null,
+    persona: normalizePersonaSnapshot(feedback.persona),
+    score: typeof feedback.score === 'number' ? feedback.score : null,
+    riskLevel: feedback.riskLevel || 'low',
+    summary: feedback.summary || '',
+    positives: Array.isArray(feedback.positives) ? feedback.positives.filter(Boolean) : [],
+    mediaFit: Array.isArray(feedback.mediaFit) ? feedback.mediaFit.filter(Boolean) : [],
+    titleFeedback: Array.isArray(feedback.titleFeedback) ? feedback.titleFeedback.filter(Boolean) : [],
+    actionItems: Array.isArray(feedback.actionItems) ? feedback.actionItems.filter(Boolean) : [],
+    honestReaction: feedback.honestReaction || '',
+    createdAt: feedback.createdAt || new Date().toISOString(),
+  };
+}
+
+function formatChatTimeLabel(value) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatChatSessionDateLabel(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('ja-JP', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function createEmptyChatMessages() {
+  return [
+    {
+      id: `system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      senderType: 'system',
+      personaId: null,
+      text: '新しいチャットです。会話は送信後に保存され、あとから再開できます。',
+      timestamp: formatChatTimeLabel(),
+    }
+  ];
+}
+
+function normalizeChatMessage(message, personaId) {
+  if (!message || typeof message !== 'object') return null;
+  const senderType = message.sender_type === 'persona' ? 'persona' : message.sender_type;
+  return {
+    id: message.id || `chat-message-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    senderType,
+    personaId: senderType === 'persona' ? personaId : null,
+    text: message.content || '',
+    timestamp: formatChatTimeLabel(message.created_at),
+    createdAt: message.created_at || null,
+  };
+}
+
+function normalizeChatSession(session) {
+  if (!session || typeof session !== 'object') return null;
+  const persona = normalizePersonaSnapshot(session.persona);
+  const personaId = session.persona_id || persona?.id || null;
+  const messages = Array.isArray(session.messages)
+    ? session.messages.map((message) => normalizeChatMessage(message, personaId)).filter(Boolean)
+    : [];
+  return {
+    id: session.id || null,
+    personaId,
+    title: session.title || '新しいチャット',
+    preview: session.preview || '',
+    messageCount: typeof session.message_count === 'number' ? session.message_count : messages.length,
+    lastMessageAt: session.last_message_at || null,
+    createdAt: session.created_at || null,
+    updatedAt: session.updated_at || null,
+    persona,
+    messages,
+  };
+}
+
+function normalizeArticleRun(article) {
+  if (!article || typeof article !== 'object' || !article.id) return null;
+  const feedbacks = Array.isArray(article.feedbacks)
+    ? article.feedbacks.map(normalizeFeedback).filter(Boolean)
+    : [];
+  const targetPersonas = normalizePersonaSnapshots(article.targetPersonas);
+  const fallbackTargetPersona = normalizePersonaSnapshot(article.targetPersona);
+  if (targetPersonas.length === 0 && fallbackTargetPersona) {
+    targetPersonas.push(fallbackTargetPersona);
+  }
+  const targetPersonaIds = Array.isArray(article.targetPersonaIds)
+    ? article.targetPersonaIds.filter(Boolean)
+    : article.targetPersonaId
+      ? [article.targetPersonaId]
+      : targetPersonas.map((persona) => persona.id).filter(Boolean);
+  const personaCount = typeof article.personaCount === 'number'
+    ? article.personaCount
+    : targetPersonaIds.length || targetPersonas.length || feedbacks.length;
+  return {
+    id: article.id,
+    inputMode: article.inputMode || ARTICLE_INPUT_MODES.URL,
+    title: article.title || '',
+    body: article.body || '',
+    url: article.url || '',
+    status: article.status || 'completed',
+    personaCount,
+    completedCount: typeof article.completedCount === 'number' ? article.completedCount : feedbacks.length,
+    feedbacks,
+    averageScore: typeof article.averageScore === 'number' ? article.averageScore : null,
+    createdAt: article.createdAt || new Date().toISOString(),
+    updatedAt: article.updatedAt || article.createdAt || new Date().toISOString(),
+    simulationId: article.simulationId || null,
+    targetPersonaIds,
+    targetPersonas,
+  };
+}
+
+function getArticleTargetLabel(article) {
+  if (!article) return '-';
+  const count = article.targetPersonaIds?.length || article.targetPersonas?.length || article.personaCount || 0;
+  return count > 0 ? `${count}名` : '-';
+}
+
+function normalizeSectionId(value) {
+  return NAV_ITEM_IDS.has(value) ? value : DEFAULT_SECTION_ID;
+}
+
+function getSectionFromUrl() {
+  if (typeof window === 'undefined') return DEFAULT_SECTION_ID;
+  const params = new URLSearchParams(window.location.search);
+  return normalizeSectionId(params.get(SECTION_QUERY_PARAM));
+}
+
+function formatDateTime(value) {
+  if (!value) return '-';
+  return new Date(value).toLocaleString('ja-JP', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+function getArticleDisplayTitle(article) {
+  const title = article.title?.trim();
+  const url = article.url?.trim();
+  if (title) return title;
+  if (url) return url;
+  return '無題の記事';
+}
+
+function getArticleInputModeLabel(mode) {
+  return mode === ARTICLE_INPUT_MODES.URL ? 'URL入力' : 'タイトル+本文';
+}
+
+
+function getArticleRunStatusMeta(status) {
+  if (status === 'running') {
+    return {
+      label: '実行中',
+      badgeClass: 'bg-blue-100 text-blue-700'
+    };
+  }
+  if (status === 'failed') {
+    return {
+      label: '失敗',
+      badgeClass: 'bg-red-100 text-red-700'
+    };
+  }
+  if (status === 'cancelled') {
+    return {
+      label: 'キャンセル',
+      badgeClass: 'bg-gray-100 text-gray-600'
+    };
+  }
+  return {
+    label: '完了',
+    badgeClass: 'bg-emerald-100 text-emerald-700'
+  };
+}
+
+function isLikelyHttpUrl(value) {
+  if (!value) return false;
+  return /^https?:\/\/\S+$/i.test(value);
+}
+
 
 function inAgeRange(age, bucket) {
   if (bucket === '指定なし') return true;
@@ -496,514 +657,101 @@ function inAgeRange(age, bucket) {
   return true;
 }
 
-function buildAdvancedPersonaProfile(persona, projectRequirement) {
-  const lowIt = persona.itLiteracy === '低';
-  const highIt = persona.itLiteracy === '高';
-  const traits = persona.personality || [];
-  const hasTrait = (keyword) => traits.some((trait) => trait.includes(keyword));
-  const requirementText = (projectRequirement || '').trim() || '要件は未入力';
-  const requirementFocus = requirementText.length > 32
-    ? `${requirementText.slice(0, 32)}...`
-    : requirementText;
-  const requirementHints = {
-    speed: /(離脱|短縮|時短|初回|迅速|スピード)/.test(requirementText),
-    reliability: /(安全|監査|権限|再現|信頼|運用)/.test(requirementText),
-    collaboration: /(共有|チーム|合意|説明|社内)/.test(requirementText),
-    onboarding: /(オンボーディング|ガイド|チュートリアル|学習|導入)/.test(requirementText)
-  };
+const FEMALE_HAIR = [
+  'variant02','variant08','variant10','variant23','variant24','variant28',
+  'variant36','variant37','variant39','variant41','variant45','variant46',
+  'variant47','variant48','variant57','variant59',
+];
+const MALE_HAIR = [
+  'variant01','variant03','variant04','variant05','variant06','variant07',
+  'variant09','variant11','variant12','variant13','variant15','variant16','variant17',
+  'variant18','variant19','variant21','variant22','variant25','variant26','variant27',
+  'variant30','variant31','variant32','variant33','variant34','variant35','variant38',
+  'variant40','variant42','variant44','variant49','variant50','variant52','variant53',
+  'variant54','variant55','variant56','variant58','variant60',
+];
+const GESTURES = [
+  'hand','handPhone','ok','okLongArm','point','pointLongArm',
+  'waveLongArm','waveLongArms','waveOkLongArms','wavePointLongArms',
+];
 
-  return {
-    mentalModel: requirementHints.speed
-      ? `「${requirementFocus}」に直結する最短手順なら採用しやすい`
-      : requirementHints.reliability
-        ? `「${requirementFocus}」を満たしつつ、根拠が見える提案なら採用しやすい`
-        : highIt
-          ? 'AIは提案の根拠を示し、人が検証して採用するもの'
-          : lowIt
-            ? 'AIは安全な範囲で補助し、人が確認して進めるもの'
-            : 'AIは提案し、人が最終判断するもの',
-    decisionLogic: requirementHints.collaboration || hasTrait('合意') || hasTrait('説明')
-      ? '個人評価だけでなく、チームで説明可能かを重視して決める'
-      : hasTrait('合理') || hasTrait('分析') || hasTrait('検証')
-        ? 'データ・比較表で合理的に決める'
-        : hasTrait('共感')
-          ? '周囲の反応と利用者の感情を重視して決める'
-          : '手間と成果のバランスを見て決める',
-    cognitiveLoadTolerance: lowIt
-      ? '3ステップ以内なら安心して試せる'
-      : highIt
-        ? '複雑でも構造が明確なら扱える'
-        : requirementHints.onboarding
-          ? '段階的なガイドがあれば複雑な設定にも対応できる'
-          : '必要性が分かれば段階的に学習できる',
-    behaviorTrigger: persona.painPoint || '困りごとが発生した瞬間',
-    usageEnvironment: highIt
-      ? 'オフィスのPC中心（必要時にスマホ）'
-      : '現場・移動中のスマホ利用を含む',
-    deviceEcosystem: requirementHints.speed
-      ? 'スマホとPCを切り替えても入力状態を維持したい'
-      : lowIt
-        ? '操作導線が一定なら端末差を気にせず使える'
-        : highIt
-          ? 'スマホとPCをシームレス連携したい'
-          : 'スマホ中心で、必要時にPCで深掘りしたい',
-    timeConstraint: requirementHints.speed || hasTrait('時短') || hasTrait('スピード') || hasTrait('テンポ')
-      ? '5分以内で主要タスクを完了したい'
-      : '30分以内で比較検討まで終えたい',
-    stakeholders: requirementHints.collaboration || hasTrait('合意') || hasTrait('説明')
-      ? '同僚・上司の承認が必要'
-      : hasTrait('共感')
-        ? '家族やチームメンバーの反応が影響する'
-        : '基本は本人判断だが運用者の意見も影響する',
-    aiLiteracy: highIt
-      ? 'AIを業務フローに積極統合し、結果を検証する'
-      : lowIt
-        ? 'AI利用は限定的で、誤作動リスクに敏感'
-        : 'AI提案を確認してから使う',
-    privacyPolicy: highIt || requirementHints.reliability
-      ? '監査・説明可能性が担保されるならデータ提供可'
-      : '利便性が高く、目的が明確なら匿名データ提供可',
-    informationChannel: requirementHints.onboarding
-      ? 'チュートリアル・動画・ヘルプ記事を優先して確認'
-      : highIt
-      ? '検索と技術コミュニティで情報収集'
-      : hasTrait('探究') || hasTrait('自己表現')
-        ? 'SNS・動画・コミュニティで情報収集'
-        : '検索と周囲の口コミを併用',
-    ethicsValue: requirementHints.reliability || hasTrait('安全') || hasTrait('堅実') || hasTrait('リスク')
-      ? '安全性・社会的リスクの低さを重視'
-      : '利便性と社会的影響のバランスを重視',
-    accessibilityNeed: lowIt
-      ? '視認性・誤操作防止・一貫したUIを重視'
-      : requirementHints.speed
-        ? '片手操作・短時間操作・明確なフィードバックを重視'
-        : '文脈に応じた入力方法の切り替えを重視',
-    wellbeing: requirementHints.speed || hasTrait('成果')
-      ? '短時間で成果を実感できることが幸福'
-      : hasTrait('共感')
-        ? '周囲と摩擦なく進められることが幸福'
-        : '不安なく継続利用できることが幸福',
-    expectedOutcome: persona.interest || '迷わず意思決定できる状態になりたい',
-    alternativeSolution: requirementHints.collaboration
-      ? 'スプレッドシート・会議メモ・チャット相談を組み合わせて対応'
-      : 'スプレッドシート・メモ・同僚相談を組み合わせて対応'
-  };
+// Pre-defined avatar shuffle URLs for persona generation animation
+const _DB = 'https://api.dicebear.com/7.x/notionists/svg?backgroundColor=transparent';
+const SHUFFLE_AVATAR_URLS = [
+  `${_DB}&seed=sa&hair=variant23&gesture=waveLongArms`,
+  `${_DB}&seed=sb&hair=variant08&beardProbability=90&beard=variant02&glass=variant02&gesture=point`,
+  `${_DB}&seed=sc&hair=variant45&gesture=handPhone`,
+  `${_DB}&seed=sd&hair=variant03&beardProbability=0&gesture=ok`,
+  `${_DB}&seed=se&hair=variant29&gesture=hand`,
+  `${_DB}&seed=sf&hair=variant58&beardProbability=85&beard=variant03&glass=variant01&hairColor=bdbdbd`,
+  `${_DB}&seed=sg&hair=variant27&gesture=waveLongArm`,
+  `${_DB}&seed=sh&hair=variant36&gesture=pointLongArm`,
+  `${_DB}&seed=si&hair=variant22&beardProbability=75&beard=variant01&gesture=waveOkLongArms`,
+  `${_DB}&seed=sj&hair=variant47&gesture=okLongArm`,
+  `${_DB}&seed=sk&hair=variant15&beardProbability=0&glass=variant03`,
+  `${_DB}&seed=sl&hair=variant43&gesture=wavePointLongArms`,
+  `${_DB}&seed=sm&hair=variant34&beardProbability=95&beard=variant04&gesture=waveLongArms`,
+  `${_DB}&seed=sn&hair=variant51&gesture=hand`,
+  `${_DB}&seed=so&hair=variant21&beardProbability=30&gesture=pointLongArm`,
+  `${_DB}&seed=sp&hair=variant59&gesture=waveOkLongArms`,
+];
+
+function idHash(id) {
+  return parseInt(id.replace(/-/g, '').slice(0, 8), 16);
 }
 
-function buildPersonaPool(seeds, totalCount) {
-  return Array.from({ length: totalCount }, (_, index) => {
-    const seed = seeds[index % seeds.length];
-    const segmentProfile = SEGMENT_PROFILE_BY_SEED[seed.id] || {};
-    const batch = Math.floor(index / seeds.length);
-    const ageOffset = ((batch + index) % 7) - 3;
-    const age = Math.max(18, Math.min(65, seed.age + ageOffset));
-    return {
-      ...seed,
-      ...segmentProfile,
-      id: `${seed.id}-${index + 1}`,
-      name: batch === 0 ? seed.name : `${seed.name} ${batch + 1}`,
-      age,
-      serial: index + 1
-    };
-  });
-}
+function getDiceBearUrl(persona) {
+  const { id, gender, age } = persona;
+  const p = new URLSearchParams({ seed: id, backgroundColor: 'transparent' });
+  const hash = idHash(id);
 
-function buildProjectContextSummary(chatMessages) {
-  const recentUserMessages = chatMessages
-    .filter((message) => message.senderType === 'user')
-    .slice(-2)
-    .map((message) => message.text.trim())
-    .filter(Boolean);
+  const isFemale = gender === '女性';
 
-  const chatContext = recentUserMessages.length > 0
-    ? recentUserMessages.join(' / ')
-    : 'チャット履歴はまだありません。';
+  // Hair: pick one value deterministically from the gender-appropriate list
+  const hairList = isFemale ? FEMALE_HAIR : MALE_HAIR;
+  p.set('hair', hairList[hash % hairList.length]);
 
-  return `${PROJECT_CONTEXT_SOURCES.readme} ${PROJECT_CONTEXT_SOURCES.codebase} Chat: ${chatContext}`;
-}
+  // Beard probability: 0 for female, increases with age for male
+  const beardProb = isFemale ? 0
+    : age < 25 ? 0
+    : age < 30 ? 15
+    : age < 40 ? 35
+    : age < 50 ? 55
+    : age < 60 ? 70
+    : 85;
+  p.set('beardProbability', beardProb);
 
-const PERSONA_POOL = buildPersonaPool(PERSONA_SEEDS, TOTAL_PERSONA_COUNT);
-
-function buildJourneyData(persona) {
-  const literacyOffset = persona.itLiteracy === '低' ? -8 : persona.itLiteracy === '高' ? 6 : 0;
-  const baseScores = [62, 58, 46, 55, 74];
-  const journeyData = JOURNEY_PHASES.map((phase, index) => ({
-    phase,
-    score: baseScores[index] + literacyOffset,
-    phaseCenter: index + 0.5
-  }));
-  const wowScore = Math.max(...journeyData.map((point) => point.score));
-  const lowScore = Math.min(...journeyData.map((point) => point.score));
-  const lowThreshold = 50;
-
-  return journeyData.map((point) => ({
-    ...point,
-    isWow: point.score === wowScore,
-    isLow: point.score === lowScore && point.score <= lowThreshold
-  }));
-}
-
-function buildJourneyGrid(persona, contextSummary) {
-  const shortContext = contextSummary || 'README / コード / チャットから文脈取得中';
-  const rows = [
-    [
-      '接点/オンライン',
-      [
-        '検索広告・SNS・成功事例記事・比較メディア',
-        'Medial公式サイト・料金ページ・機能紹介動画',
-        'オンボーディング画面・セグメント設定・プラットフォーム連携',
-        'AI生成記事の確認画面・承認ボタン・投稿プレビュー',
-        '分析ダッシュボード・AI改善提案・メールレポート'
-      ]
-    ],
-    [
-      '接点/オフライン',
-      [
-        `${persona.occupation}仲間からの口コミ・SNSでの評判`,
-        '事業計画・発信戦略の見直し・知人への相談',
-        '初期設定の目標確認・広める対象のメモ整理',
-        `毎朝${persona.name}がスマホで記事を確認し承認するルーティン`,
-        '月次の振り返り・次の発信テーマの検討'
-      ]
-    ],
-    [
-      'モチベーション',
-      [
-        `😟 ${persona.painPoint}。コンテンツを継続的に発信したいが時間もスキルも足りない`,
-        '😐 本当に自動で質の高い記事が作れるか・投稿後の反応はどうなるか不安',
-        '😬 設定を間違えて変な内容が公開されないか心配。まず安全に試したい',
-        '🙂 承認した記事が公開され、最初のPVやいいねが来た。「これは使える」と実感',
-        '😄 メディアが育ち、自然流入やフォロワーが増え続けている。影響力が拡大している'
-      ]
-    ],
-    [
-      'ユーザー行動',
-      [
-        `${persona.name}が「コンテンツ自動生成」「メディア運用 AI」で検索し、Medialの成功事例記事を2〜3件保存する`,
-        '料金・投稿先プラットフォーム・記事品質・サポート体制を比較し、無料トライアルを申し込む',
-        '広める対象を入力し、ターゲットセグメント・発信プラットフォーム・自動処理ルールを設定する',
-        'AIが生成した記事を読み、必要に応じて編集したうえで承認する。投稿後の反応数値を確認する',
-        '分析レポートを確認し、AI改善提案を受け取る。新たなテーマでオリジナル素材を生成させる'
-      ]
-    ],
-    [
-      'インサイト仮説',
-      [
-        `「${shortContext.slice(0, 20)}...」に近い業種の成功事例を見せると、認知段階の興味・申込率が上がる`,
-        'トライアル期間中に1本の記事が公開されるまでを体験できると、本登録への転換率が高まる',
-        '承認ステップで「人が確認してから公開される」安心感を強調すると、導入ハードルが下がる',
-        '初回承認後すぐにPV・インプレッション数が見えると達成感が生まれ、継続意向が上がる',
-        '改善提案が「やること」形式で届き、1クリックで実行できると運用の継続率が高まる'
-      ]
-    ]
-  ];
-
-  return rows.map(([row, values]) => ({
-    row,
-    values: JOURNEY_PHASES.map((_, index) => values[index] || '')
-  }));
-}
-
-function buildMentalModel(persona, contextSummary) {
-  const contextHint = (contextSummary || 'README / Codebase / Chat').slice(0, 28);
-
-  const featureInventory = [
-    { id: 'onboarding', label: 'オンボーディング（広める対象入力）' },
-    { id: 'segmentSetting', label: 'セグメント・メディア・X設定' },
-    { id: 'autoSettings', label: '自動処理設定' },
-    { id: 'aiEditorial', label: 'AI編集部（AIからの提案）' },
-    { id: 'trendWatch', label: 'トレンド確認' },
-    { id: 'newsCollection', label: 'ニュース収集' },
-    { id: 'originalContent', label: 'オリジナル素材生成' },
-    { id: 'articleList', label: '記事一覧・承認管理' },
-    { id: 'analytics', label: '分析・改善' }
-  ];
-
-  const featureById = Object.fromEntries(featureInventory.map((item) => [item.id, item]));
-
-  const towerDefinitions = [
-    {
-      id: 'brandSetup',
-      phaseId: 'prepare',
-      title: '自分の「好き」や「売り」を整理する',
-      mentalTasks: [
-        `「${persona.value || '自分の強み'}」を軸に売りたいものをキーワードで書き出す`,
-        `${persona.occupation || 'ユーザー'}として届けたい相手の悩みをセグメントで明確にする`,
-        'キレイめ・エモい・信頼感など、メディアの世界観（トーン＆マナー）を決める',
-        'フォロワー数・購入数・認知拡大など、最初の目標を設定する'
-      ],
-      gapIssue: '設定が難しくて挫折する：セグメント設定などのマーケティング用語が分からず、最初で止まってしまう。',
-      gapOpportunity: 'オンボーディングUIを簡略化し、専門用語をやさしい言葉・具体例に置き換えることでドロップを防ぐ。'
-    },
-    {
-      id: 'trendResearch',
-      phaseId: 'prepare',
-      title: '世の中の空気感を掴む',
-      mentalTasks: [
-        '今SNSでバズっているハッシュタグや話題をチェックする',
-        '同じジャンルの競合・類似アカウントの発信動向を確認する',
-        `${contextHint} に関連するニュースを自分のメディアで言及できるか考える`,
-        'その情報が「今」出すべきものか、鮮度を判断する'
-      ]
-    },
-    {
-      id: 'selfPublish',
-      phaseId: 'create',
-      title: '自分らしさを添えて発信する',
-      mentalTasks: [
-        'AIの下書きを読み、自分の言葉遣いとして違和感がないか確認する',
-        '「このキーワードは絶対入れて」と独自のこだわりをオリジナル素材で注入する',
-        'ブランドイメージに合わない提案を却下してハズレを間引く',
-        '最終的な「公開」の決定権を持ち、承認ボタンで納得感を得る'
-      ],
-      gapIssue: '「AI感」が強すぎて恥ずかしい：文章が硬く、自分のSNSアカウントに載せるのは抵抗がある。',
-      gapOpportunity: 'トーン＆マナー設定の細かい指定や口調の学習機能を追加し、AI文章をより自然な表現に近づける。'
-    },
-    {
-      id: 'autoOps',
-      phaseId: 'automate',
-      title: '運用の手間を最小化する',
-      mentalTasks: [
-        '投稿時間を気にせずAIにスケジュールを任せて自動投稿する',
-        'Instagram・X・noteなど複数チャネルへ一度に展開する',
-        '隙間時間にAIの提案を見て承認するだけのルーティンを確立する',
-        '放置していても裏側で計測が回っている安心な状態を維持する'
-      ]
-    },
-    {
-      id: 'improveGrowth',
-      phaseId: 'grow',
-      title: '手応えを感じて改善する',
-      mentalTasks: [
-        'なぜこの記事が読まれたか、AIの分析結果で「伸びた理由」を理解する',
-        'フォロワーの反応を楽しみながら影響力が育っている実感を得る',
-        '改善案を受け入れ、徐々にAIの精度を自分好みに最適化させる',
-        '成果を見て新しいテーマやセグメントに挑戦したくなる'
-      ],
-      gapIssue: '何が正解か分からない：数値は見れるが、次に何をすればいいかの具体的アクションが欲しい。',
-      gapOpportunity: 'AI分析に「次のアクション提案」を付加し、改善の優先順位を明示する機能を追加する。'
-    }
-  ];
-
-  const supportByTower = {
-    brandSetup: ['onboarding'],
-    trendResearch: ['trendWatch', 'newsCollection'],
-    selfPublish: ['articleList'],
-    autoOps: ['autoSettings', 'aiEditorial'],
-    improveGrowth: ['analytics']
-  };
-
-  if (persona.itLiteracy === '低') {
-    supportByTower.brandSetup = [];
-    supportByTower.autoOps = ['autoSettings'];
+  // Hair color by age
+  if (age >= 65) {
+    p.set('hairColor', 'f1f1f1,e0e0e0');
+  } else if (age >= 55) {
+    p.set('hairColor', 'bdbdbd,9e9e9e');
+  } else if (age >= 45) {
+    p.set('hairColor', '4a4a4a,3d3d3d');
+  } else if (age >= 30) {
+    p.set('hairColor', '1a1a1a,2d1b0e');
+  } else {
+    p.set('hairColor', '1a1a1a,2d1b0e,4a3728');
   }
 
-  if (persona.itLiteracy === '高') {
-    supportByTower.brandSetup = ['onboarding', 'segmentSetting'];
-    supportByTower.selfPublish = ['originalContent', 'articleList'];
-    supportByTower.improveGrowth = ['analytics', 'aiEditorial'];
+  // Glasses for older personas
+  if (age >= 55) {
+    p.set('glass', 'variant01,variant02,variant03');
   }
 
-  const towers = towerDefinitions.map((tower) => {
-    const supportIds = supportByTower[tower.id] || [];
-    const supportCards = supportIds.map((id) => featureById[id]).filter(Boolean);
-    const coverageStatus = supportCards.length === 0 ? 'gap' : supportCards.length === 1 ? 'partial' : 'covered';
-    return {
-      ...tower,
-      supportCards,
-      coverageStatus
-    };
-  });
+  // Gesture: ~2/3 of personas get one, deterministic from id
+  if (hash % 3 !== 0) {
+    p.set('gesture', GESTURES[hash % GESTURES.length]);
+  }
 
-  const phaseOrder = [
-    { id: 'prepare', title: '自分を準備する' },
-    { id: 'create', title: '自分らしく発信する' },
-    { id: 'automate', title: '運用を自動化する' },
-    { id: 'grow', title: '成長を実感する' }
-  ];
-
-  const phases = phaseOrder.map((phase) => ({
-    ...phase,
-    towers: towers.filter((tower) => tower.phaseId === phase.id)
-  }));
-
-  const gaps = towers
-    .filter((tower) => tower.coverageStatus !== 'covered')
-    .map((tower) => ({
-      towerTitle: tower.title,
-      type: tower.coverageStatus,
-      issue:
-        tower.gapIssue ||
-        (tower.coverageStatus === 'gap'
-          ? '対応する機能・コンテンツが未配置。'
-          : '一部機能はあるが、行動タスク全体を支え切れていない。'),
-      opportunity:
-        tower.gapOpportunity ||
-        (tower.coverageStatus === 'gap'
-          ? '新規機能追加または既存機能の適用範囲拡張が必要。'
-          : '補助コンテンツや導線改善でカバー率を高める余地がある。')
-    }));
-
-  return {
-    phases,
-    gaps
-  };
-}
-
-function buildStoryboard(persona, contextSummary) {
-  return [
-    {
-      scene: 'Scene 1',
-      title: '発信できない課題',
-      description: `${persona.name}は${persona.occupation}として広めたいものがあるが、コンテンツ制作・投稿・計測を続ける時間とスキルが足りず、発信が止まってしまっている。`
-    },
-    {
-      scene: 'Scene 2',
-      title: 'Medialとの出会い',
-      description: '「コンテンツ自動生成」で検索していたところMedialを発見。成功事例の記事を読み、「設定すれば自動でメディアが育つ」というコンセプトに共感して無料トライアルを申し込む。'
-    },
-    {
-      scene: 'Scene 3',
-      title: 'オンボーディング完了',
-      description: '広める対象を入力し、ターゲットセグメントと発信プラットフォームを設定。AIが自動で生成したサンプル記事を確認し、内容に驚きながら最初の記事を承認・公開する。'
-    },
-    {
-      scene: 'Scene 4',
-      title: '日次承認ルーティン',
-      description: `毎朝${persona.name}はスマホでAI編集部からの提案を確認。気に入った記事を承認するだけで、複数のプラットフォームに自動投稿される。作業は5分以内に完了する。`
-    },
-    {
-      scene: 'Scene 5',
-      title: 'メディアの成長実感',
-      description: '分析ダッシュボードを開くと、PVとフォロワー数が着実に伸びていることが分かる。AIの改善提案を受け取りながら、影響力が自然に拡大していくサイクルが定着している。'
-    }
-  ];
-}
-
-function buildUsabilityResults(persona) {
-  const literacy = persona.itLiteracy;
-  const makeSubtask = (label, completed, confusionPoint = '') => ({
-    label,
-    completed,
-    confusionPoint,
-    status: completed ? '完了' : '未完了',
-    severity: !completed ? '高' : confusionPoint ? '中' : '低'
-  });
-
-  const tasks = [
-    {
-      task: '初期セットアップを完了する',
-      subtasks: [
-        makeSubtask('アカウント作成を開始する', true),
-        makeSubtask(
-          '必須プロフィール項目を入力する',
-          literacy !== '低',
-          literacy === '低' ? '必須/任意の区別が見えず、入力途中で停止した。' : '入力優先順が分かりにくく、順番で迷った。'
-        ),
-        makeSubtask(
-          '通知設定の初期値を確認する',
-          true,
-          literacy === '低' ? 'ON/OFF変更時の影響範囲が分かりにくい。' : ''
-        ),
-        makeSubtask(
-          '権限リクエストの理由を確認する',
-          literacy !== '低',
-          literacy === '低' ? '権限用途の説明が短く、許可判断できなかった。' : literacy === '中' ? '権限が必要な場面を探すのに時間がかかった。' : ''
-        ),
-        makeSubtask(
-          'サンプルプロジェクトを選択する',
-          true,
-          literacy === '低' ? 'テンプレート差分が見えにくく、選択で迷った。' : ''
-        ),
-        makeSubtask('セットアップ完了画面を確認する', true)
-      ]
-    },
-    {
-      task: '要件案に対するペルソナ反応を確認する',
-      subtasks: [
-        makeSubtask('対象セグメントを設定する', true, literacy === '低' ? 'セグメント用語の意味が直感的でなかった。' : ''),
-        makeSubtask('顧問ペルソナを選択する', true),
-        makeSubtask(
-          '要件案を入力して生成を実行する',
-          true,
-          literacy === '低' ? 'どこまで書けば十分か判断に迷った。' : ''
-        ),
-        makeSubtask(
-          '反応コメントの根拠を確認する',
-          literacy !== '低',
-          literacy === '低'
-            ? '根拠情報への導線が見つからず、この工程で止まった。'
-            : literacy === '中'
-              ? '根拠の粒度が一定でなく、比較判断に迷った。'
-              : '比較軸を切り替える操作位置が分かりづらかった。'
-        ),
-        makeSubtask(
-          '課題メモとして保存する',
-          true,
-          literacy === '低' ? '保存ボタンが目立たず見落とした。' : ''
-        ),
-        makeSubtask(
-          '別ペルソナで再実行して差分を確認する',
-          true,
-          literacy !== '高' ? '前回条件との差分表示が弱く、再実行条件で迷った。' : ''
-        )
-      ]
-    },
-    {
-      task: '結果をチームへ共有する',
-      subtasks: [
-        makeSubtask(
-          '共有したい結果セットを選択する',
-          true,
-          literacy === '低' ? '対象バージョンの見分けがつきにくい。' : ''
-        ),
-        makeSubtask('要点サマリーを自動生成する', true),
-        makeSubtask(
-          '重要課題の優先度を設定する',
-          literacy !== '低',
-          literacy === '低' ? '優先度ラベルの定義が分からず確定できなかった。' : literacy === '中' ? '優先度ラベルの違いで迷った。' : ''
-        ),
-        makeSubtask(
-          '共有テンプレート形式を選択する',
-          true,
-          literacy === '低' ? 'テンプレート用途の説明が不足していた。' : ''
-        ),
-        makeSubtask('配信先チャンネルを指定する', true),
-        makeSubtask(
-          '共有後に既読とコメントを確認する',
-          true,
-          literacy !== '高' ? '既読更新タイミングが遅く、状態判断で迷った。' : ''
-        )
-      ]
-    }
-  ];
-
-  const tasksWithSummary = tasks.map((task) => {
-    const completedSubtaskCount = task.subtasks.filter((subtask) => subtask.completed).length;
-    const confusedSubtaskCount = task.subtasks.filter((subtask) => Boolean(subtask.confusionPoint)).length;
-    const severity = completedSubtaskCount < task.subtasks.length ? '高' : confusedSubtaskCount > 0 ? '中' : '低';
-    return { ...task, completedSubtaskCount, confusedSubtaskCount, severity };
-  });
-
-  const allSubtasks = tasksWithSummary.flatMap((task) => task.subtasks);
-  const completedCount = allSubtasks.filter((subtask) => subtask.completed).length;
-  const incompleteCount = allSubtasks.length - completedCount;
-  const confusedCount = allSubtasks.filter((subtask) => Boolean(subtask.confusionPoint)).length;
-  const literacyBonus = literacy === '高' ? 4 : literacy === '低' ? -4 : 0;
-
-  return {
-    completionRate: Math.round((completedCount / allSubtasks.length) * 100),
-    clarityScore: Math.max(45, Math.min(95, Math.round(92 - confusedCount * 2 - incompleteCount * 6 + literacyBonus))),
-    confidenceScore: Math.max(45, Math.min(96, Math.round(90 - Math.round(confusedCount * 1.8) - incompleteCount * 7 + literacyBonus))),
-    tasks: tasksWithSummary
-  };
+  return `https://api.dicebear.com/7.x/notionists/svg?${p.toString()}`;
 }
 
 function Avatar({ persona, size = 'h-9 w-9' }) {
   return (
-    <div className={`${size} overflow-hidden rounded-full border border-[#3d3d3d] bg-[#2a2a2a]`}>
+    <div className={`${size} overflow-hidden rounded-full border border-border bg-muted`}>
       <img
-        src={`https://api.dicebear.com/7.x/notionists/svg?seed=${encodeURIComponent(persona.id)}&backgroundColor=transparent`}
+        src={getDiceBearUrl(persona)}
         alt={`${persona.name}のアバター`}
         className="h-full w-full object-cover"
         loading="lazy"
@@ -1015,13 +763,13 @@ function Avatar({ persona, size = 'h-9 w-9' }) {
 function EmptyState({ title, description, onOpenSettings }) {
   return (
     <div className="flex h-full items-center justify-center p-6">
-      <div className="max-w-xl rounded-xl border border-[#333333] bg-[#1f1f1f] p-8 text-center">
-        <h3 className="mb-2 text-lg font-semibold text-[#e5e5e5]">{title}</h3>
-        <p className="mb-5 text-sm leading-relaxed text-[#9b9b9b]">{description}</p>
+      <div className="max-w-xl rounded-xl border border-border bg-card p-8 text-center">
+        <h3 className="mb-2 text-lg font-semibold text-foreground">{title}</h3>
+        <p className="mb-5 text-sm leading-relaxed text-muted-foreground">{description}</p>
         <button
           type="button"
           onClick={onOpenSettings}
-          className="rounded-md bg-[#047857] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#065f46]"
+          className={BUTTON_PRIMARY_CLASS}
         >
           設定でペルソナを選択
         </button>
@@ -1030,152 +778,545 @@ function EmptyState({ title, description, onOpenSettings }) {
   );
 }
 
-function PersonaSwitcher({ personas, selectedId, onChange }) {
+function getPersonaChatLabel(persona) {
+  if (!persona) return 'Persona';
+  const ageGender = [persona.age ? `${persona.age}歳` : null, persona.gender || null].filter(Boolean).join('・');
+  return `${persona.display_name || persona.name}${ageGender ? `（${ageGender}）` : ''}`;
+}
+
+function getSelectedPersonaLabel(persona) {
+  if (!persona) return '不明なペルソナ';
+  const baseName = (persona.display_name && persona.name && persona.display_name !== persona.name)
+    ? `${persona.display_name} / ${persona.name}`
+    : (persona.display_name || persona.name || '不明なペルソナ');
+  const ageGender = [persona.age ? `${persona.age}歳` : null, persona.gender || null].filter(Boolean).join('・');
+  return `${baseName}${ageGender ? `（${ageGender}）` : ''}`;
+}
+
+function normalizeSegmentSettings(settings) {
+  const locationValue = settings?.location ?? settings?.region_type ?? '指定なし';
+  const validLocation = LOCATION_OPTIONS.some((option) => option.value === locationValue)
+    ? locationValue
+    : '指定なし';
+  return {
+    age: AGE_OPTIONS.includes(settings?.age) ? settings.age : '指定なし',
+    gender: GENDER_OPTIONS.includes(settings?.gender) ? settings.gender : '指定なし',
+    location: validLocation,
+  };
+}
+
+function normalizeTagValue(value) {
+  if (typeof value !== 'string') return '';
+  return value.trim().replace(/\s+/g, ' ');
+}
+
+function appendUniqueTags(existing, incoming) {
+  const seen = new Set(existing.map((item) => item.toLowerCase()));
+  const next = [...existing];
+  incoming.forEach((item) => {
+    const normalized = normalizeTagValue(item);
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    next.push(normalized);
+  });
+  return next;
+}
+
+function splitTagInput(raw) {
+  const normalized = String(raw || '').replace(/、/g, ',');
+  const hasTrailingSeparator = /[,\n]\s*$/.test(normalized);
+  const parts = normalized
+    .split(/[,\n]+/)
+    .map((part) => normalizeTagValue(part))
+    .filter(Boolean);
+
+  if (!hasTrailingSeparator && parts.length > 0) {
+    return {
+      complete: parts.slice(0, -1),
+      pending: parts[parts.length - 1],
+    };
+  }
+
+  return { complete: parts, pending: '' };
+}
+
+function PersonaSwitcher({ personas, selectedId, onChange, inputId = 'persona-switcher', disabled = false }) {
   return (
     <div>
-      <label htmlFor="persona-switcher" className="mb-1 block text-xs text-[#8f8f8f]">
-        対象ペルソナ
+      <label htmlFor={inputId} className="mb-1 block text-xs text-muted-foreground">
+        新規チャットの相談相手
       </label>
-      <select
-        id="persona-switcher"
+      <SelectField
+        id={inputId}
         value={selectedId || ''}
         onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-md border border-[#333333] bg-[#252526] px-2 py-2 text-sm text-[#cccccc] focus:border-[#047857] focus:outline-none"
+        disabled={disabled}
       >
         {personas.map((persona) => (
           <option key={persona.id} value={persona.id}>
-            {persona.name} ({persona.age}歳 / {persona.occupation})
+            {getPersonaChatLabel(persona)}
           </option>
         ))}
-      </select>
+      </SelectField>
     </div>
   );
 }
 
-function JourneyScoreDot({ cx, cy, payload }) {
-  if (cx == null || cy == null || !payload) return null;
-
+function SelectField({ className = '', containerClassName = '', children, ...props }) {
   return (
-    <g>
-      <circle cx={cx} cy={cy} r={4} fill="#047857" stroke="#d1fae5" strokeWidth={1} />
-      {payload.isWow && (
-        <g>
-          <circle cx={cx} cy={cy - 18} r={10} fill="#fef3c7" stroke="#f59e0b" strokeWidth={1.5} />
-          <text x={cx} y={cy - 14} textAnchor="middle" fill="#92400e" fontSize={11}>
-            ☺
-          </text>
-        </g>
-      )}
-      {payload.isLow && (
-        <g>
-          <circle cx={cx} cy={cy + 18} r={10} fill="#fee2e2" stroke="#dc2626" strokeWidth={1.5} />
-          <text x={cx} y={cy + 22} textAnchor="middle" fill="#7f1d1d" fontSize={11}>
-            ☹
-          </text>
-        </g>
-      )}
-    </g>
+    <div className={`relative ${containerClassName}`.trim()}>
+      <select
+        {...props}
+        className={`${SELECT_CLASS} ${className}`.trim()}
+      >
+        {children}
+      </select>
+      <ChevronDown
+        size={16}
+        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+      />
+    </div>
   );
 }
 
-export default function PluginConnectPage({ onBack }) {
-  const [activeSection, setActiveSection] = useState('settings');
+export default function PluginConnectPage({ onLogout }) {
+  const [activeSection, setActiveSection] = useState(() => getSectionFromUrl());
 
-  const [segmentSettings, setSegmentSettings] = useState({
-    country: '日本',
-    age: '25-34',
-    gender: '女性',
-    itLiteracy: '中',
-    occupation: '指定なし',
-    education: '指定なし',
-    hobby: '指定なし',
-    family: '指定なし',
-    environment: '指定なし',
-    commute: '指定なし',
-    driving: '指定なし'
-  });
-  const [projectRequirement, setProjectRequirement] = useState(
-    'オンボーディング時の離脱を減らし、初回価値の体験までを短縮したい。'
-  );
+  const [personaPool, setPersonaPool] = useState([]);
+  const [personaPoolLoading, setPersonaPoolLoading] = useState(true);
+
+  const [mediaInfo, setMediaInfo] = useState({ title: '', overview: '' });
+  const [savedSnackbar, setSavedSnackbar] = useState(false);
+  const [segmentSettings, setSegmentSettings] = useState(DEFAULT_SEGMENT_SETTINGS);
   const [catalogPage, setCatalogPage] = useState(1);
 
-  const [assignedPersonaIds, setAssignedPersonaIds] = useState(['miyuki-1', 'miyuki-11', 'rin-13']);
+  const [assignedPersonaIds, setAssignedPersonaIds] = useState([]);
   const [activePersonaId, setActivePersonaId] = useState(null);
   const [previewPersonaId, setPreviewPersonaId] = useState(null);
 
-  const [chatMessages, setChatMessages] = useState([
-    {
-      id: 1,
-      senderType: 'system',
-      personaId: null,
-      text: '設定でペルソナを選択すると、ここで要件相談ができます。',
-      timestamp: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
-    }
-  ]);
+  const [chatSessions, setChatSessions] = useState([]);
+  const [selectedChatId, setSelectedChatId] = useState(null);
+  const [chatMessages, setChatMessages] = useState(() => createEmptyChatMessages());
   const [chatInput, setChatInput] = useState('');
-  const [isContextEnabled, setIsContextEnabled] = useState(true);
+  const [isChatStreaming, setIsChatStreaming] = useState(false);
+  const [isChatSessionsLoading, setIsChatSessionsLoading] = useState(true);
+  const [isChatDetailLoading, setIsChatDetailLoading] = useState(false);
+  const [isMobileChatLibraryOpen, setIsMobileChatLibraryOpen] = useState(false);
 
-  const [generatingSection, setGeneratingSection] = useState(null);
-  const [generatedSections, setGeneratedSections] = useState({
-    journey: false,
-    mentalModel: false,
-    storyboard: false,
-    usability: false
-  });
   const [advancedProfilesByPersonaId, setAdvancedProfilesByPersonaId] = useState({});
   const [loadingAdvancedProfileByPersonaId, setLoadingAdvancedProfileByPersonaId] = useState({});
-
-  // ユーザー調査
-  const [surveyTab, setSurveyTab] = useState('create'); // 'create' | 'target' | 'results'
-  const [surveyTitle, setSurveyTitle] = useState('オンボーディング体験アンケート');
-  const [surveyQuestions, setSurveyQuestions] = useState([
-    { id: 1, text: 'このサービスを知ったきっかけは何ですか？', type: 'single', options: ['Web検索', 'SNS', '知人の紹介', 'その他'] },
-    { id: 2, text: 'オンボーディングの操作は分かりやすかったですか？', type: 'rating', options: [] },
-    { id: 3, text: '最も改善してほしい点を教えてください。', type: 'text', options: [] }
-  ]);
-  const [surveyLoading, setSurveyLoading] = useState(false);
-  const [surveyDetailQuestionId, setSurveyDetailQuestionId] = useState(null);
-  const [surveyDetailPage, setSurveyDetailPage] = useState(1);
-  const [surveyDetailSort, setSurveyDetailSort] = useState({ key: 'index', dir: 'asc' });
-  const [surveyDetailFilter, setSurveyDetailFilter] = useState({ gender: '', itLiteracy: '', search: '' });
+  const [articleFeedbackView, setArticleFeedbackView] = useState(ARTICLE_FEEDBACK_VIEWS.LIST);
+  const [articleInputMode, setArticleInputMode] = useState(ARTICLE_INPUT_MODES.URL);
+  const [articleForm, setArticleForm] = useState(() => createEmptyArticleForm());
+  const [articleFormError, setArticleFormError] = useState('');
+  const [articleSearchQuery, setArticleSearchQuery] = useState('');
+  const [articleTablePage, setArticleTablePage] = useState(1);
+  const [articleTablePageSize, setArticleTablePageSize] = useState(10);
+  const [articleRuns, setArticleRuns] = useState([]);
+  const [selectedArticleId, setSelectedArticleId] = useState(null);
+  const [selectedFeedbackId, setSelectedFeedbackId] = useState(null);
+  const [dbPersonaById, setDbPersonaById] = useState({});
+  const [simulationSummaryById, setSimulationSummaryById] = useState({});
 
   const messageIdRef = useRef(2);
   const messageEndRef = useRef(null);
   const timeoutIdsRef = useRef([]);
   const pendingAdvancedProfileRef = useRef({});
+  const isChatInputComposingRef = useRef(false);
+  const projectSettingsLoadedRef = useRef(false);
+  const savedMediaInfoRef = useRef({ title: '', overview: '' });
 
-  const filteredPersonas = useMemo(() => {
-    return PERSONA_POOL.filter((persona) => {
-      const countryOk = segmentSettings.country === '指定なし' || persona.country === segmentSettings.country;
-      const ageOk = inAgeRange(persona.age, segmentSettings.age);
-      const genderOk = segmentSettings.gender === '指定なし' || persona.gender === segmentSettings.gender;
-      const itOk = segmentSettings.itLiteracy === '指定なし' || persona.itLiteracy === segmentSettings.itLiteracy;
-      const occupationOk = segmentSettings.occupation === '指定なし' || persona.occupation === segmentSettings.occupation;
-      const educationOk = segmentSettings.education === '指定なし' || persona.education === segmentSettings.education;
-      const hobbyOk = segmentSettings.hobby === '指定なし' || persona.hobby === segmentSettings.hobby;
-      const familyOk = segmentSettings.family === '指定なし' || persona.family === segmentSettings.family;
-      const environmentOk = segmentSettings.environment === '指定なし' || persona.environment === segmentSettings.environment;
-      const commuteOk = segmentSettings.commute === '指定なし' || persona.commute === segmentSettings.commute;
-      const drivingOk = segmentSettings.driving === '指定なし' || persona.driving === segmentSettings.driving;
-      return (
-        countryOk &&
-        ageOk &&
-        genderOk &&
-        itOk &&
-        occupationOk &&
-        educationOk &&
-        hobbyOk &&
-        familyOk &&
-        environmentOk &&
-        commuteOk &&
-        drivingOk
-      );
-    });
+  // Persona generation modal state
+  const [showPersonaGenerateModal, setShowPersonaGenerateModal] = useState(false);
+  const [isOnboarding, setIsOnboarding] = useState(false);
+  const [genTab, setGenTab] = useState('easy'); // 'easy' | 'segment'
+  const [genEasyText, setGenEasyText] = useState('');
+  const [genForm, setGenForm] = useState(() => ({ ...DEFAULT_GEN_FORM }));
+  const [genFormError, setGenFormError] = useState('');
+  const [occupationInput, setOccupationInput] = useState('');
+  const [segmentDraft, setSegmentDraft] = useState({ name: '', value: '' });
+  const [showSegmentForm, setShowSegmentForm] = useState(false);
+  const [genProgress, setGenProgress] = useState(null); // null | { personaIndex, totalCount, step, stepDetail }
+  const [genResults, setGenResults] = useState([]); // completed persona summaries
+  const [genRunning, setGenRunning] = useState(false);
+  const [avatarTick, setAvatarTick] = useState(0);
+
+  // Cycle avatar tick every second during generation
+  useEffect(() => {
+    if (!genRunning) return;
+    const timer = setInterval(() => setAvatarTick((t) => t + 1), 1000);
+    return () => clearInterval(timer);
+  }, [genRunning]);
+
+  // Load project settings, persona pool, and chat sessions in parallel on mount
+  useEffect(() => {
+    // Project settings
+    fetch('/api/project-settings/', { headers: authHeaders() })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.assigned_persona_ids?.length > 0) {
+          setAssignedPersonaIds(data.assigned_persona_ids);
+        }
+        if (data.active_persona_id) {
+          setActivePersonaId(data.active_persona_id);
+        }
+        if (data.media_info) {
+          setMediaInfo(data.media_info);
+          savedMediaInfoRef.current = data.media_info;
+        }
+        if (data.segment_settings) {
+          setSegmentSettings(normalizeSegmentSettings(data.segment_settings));
+        }
+        if (Array.isArray(data.article_feedback_state?.article_runs)) {
+          setArticleRuns(data.article_feedback_state.article_runs.map(normalizeArticleRun).filter(Boolean));
+        }
+        projectSettingsLoadedRef.current = true;
+      })
+      .catch(() => { projectSettingsLoadedRef.current = true; });
+
+    // Persona pool
+    fetch('/api/persona-pool/?limit=200', { headers: authHeaders() })
+      .then((res) => res.json())
+      .then((data) => {
+        const pool = Array.isArray(data) ? data : [];
+        setPersonaPool(pool);
+        setPersonaPoolLoading(false);
+        if (pool.length === 0 && !localStorage.getItem('personaai_onboarding_done')) {
+          setIsOnboarding(true);
+          setGenForm((prev) => ({ ...prev, count: 5 }));
+          setShowPersonaGenerateModal(true);
+        }
+      })
+      .catch(() => { setPersonaPool([]); setPersonaPoolLoading(false); });
+
+    // Chat sessions
+    loadChatSessions().catch(() => {});
+  }, []);
+
+  // Save assignedPersonaIds to DB whenever it changes (after initial load)
+  useEffect(() => {
+    if (!projectSettingsLoadedRef.current) return;
+    fetch('/api/project-settings/', {
+      method: 'PUT',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ assigned_persona_ids: assignedPersonaIds }),
+    }).catch(() => {});
+  }, [assignedPersonaIds]);
+
+  // Save mediaInfo to DB whenever it changes (after initial load) — debounced
+  useEffect(() => {
+    if (!projectSettingsLoadedRef.current) return;
+    if (
+      mediaInfo.title === savedMediaInfoRef.current.title &&
+      mediaInfo.overview === savedMediaInfoRef.current.overview
+    ) return;
+    const timer = setTimeout(() => {
+      fetch('/api/project-settings/', {
+        method: 'PUT',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ media_info: mediaInfo }),
+      })
+        .then((res) => {
+          if (res.ok) {
+            savedMediaInfoRef.current = mediaInfo;
+            setSavedSnackbar(true);
+            setTimeout(() => setSavedSnackbar(false), 3000);
+          }
+        })
+        .catch(() => {});
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [mediaInfo]);
+
+  // Save segmentSettings to DB whenever it changes (after initial load)
+  useEffect(() => {
+    if (!projectSettingsLoadedRef.current) return;
+    fetch('/api/project-settings/', {
+      method: 'PUT',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ segment_settings: segmentSettings }),
+    }).catch(() => {});
   }, [segmentSettings]);
 
+  useEffect(() => {
+    if (!projectSettingsLoadedRef.current) return;
+    fetch('/api/project-settings/', {
+      method: 'PUT',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        article_feedback_state: {
+          article_runs: articleRuns,
+        },
+      }),
+    }).catch(() => {});
+  }, [articleRuns]);
+
+  useEffect(() => {
+    if (!projectSettingsLoadedRef.current) return;
+    fetch('/api/project-settings/', {
+      method: 'PUT',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ active_persona_id: activePersonaId }),
+    }).catch(() => {});
+  }, [activePersonaId]);
+
+  const refreshPersonaPool = () => {
+    fetch('/api/persona-pool/?limit=200', { headers: authHeaders() })
+      .then((res) => res.json())
+      .then((data) => setPersonaPool(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  };
+
+  const mergePersonasIntoCache = (personas) => {
+    const normalized = normalizePersonaSnapshots(personas);
+    if (normalized.length === 0) return;
+    setDbPersonaById((prev) => {
+      const next = { ...prev };
+      normalized.forEach((persona) => {
+        if (!persona.id) return;
+        next[persona.id] = { ...(next[persona.id] || {}), ...persona };
+      });
+      return next;
+    });
+  };
+
+  const upsertChatSession = (session) => {
+    if (!session?.id) return;
+    setChatSessions((prev) => {
+      const next = [session, ...prev.filter((item) => item.id !== session.id)];
+      return next.sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+    });
+  };
+
+  const loadChatSessions = async () => {
+    setIsChatSessionsLoading(true);
+    try {
+      const data = await fetchPersonaChatSessions();
+      const sessions = Array.isArray(data) ? data.map(normalizeChatSession).filter(Boolean) : [];
+      setChatSessions(sessions);
+      mergePersonasIntoCache(sessions.map((session) => session.persona).filter(Boolean));
+    } catch {
+      setChatSessions([]);
+    } finally {
+      setIsChatSessionsLoading(false);
+    }
+  };
+
+  const handleOpenChatSession = async (chatId) => {
+    if (!chatId || isChatStreaming) return;
+    setSelectedChatId(chatId);
+    setIsMobileChatLibraryOpen(false);
+    setIsChatDetailLoading(true);
+    try {
+      const data = await fetchPersonaChatSession(chatId);
+      const session = normalizeChatSession(data);
+      if (!session) return;
+      upsertChatSession(session);
+      mergePersonasIntoCache(session.persona ? [session.persona] : []);
+      setChatMessages(session.messages.length > 0 ? session.messages : createEmptyChatMessages());
+      if (session.personaId && assignedPersonas.some((persona) => persona.id === session.personaId)) {
+        setActivePersonaId(session.personaId);
+      }
+    } catch {
+      setChatMessages([
+        {
+          id: `chat-error-${Date.now()}`,
+          senderType: 'system',
+          personaId: null,
+          text: 'チャットの読み込みに失敗しました。',
+          timestamp: formatChatTimeLabel(),
+        }
+      ]);
+    } finally {
+      setIsChatDetailLoading(false);
+    }
+  };
+
+  const handleStartNewChat = () => {
+    if (isChatStreaming) return;
+    setSelectedChatId(null);
+    setIsMobileChatLibraryOpen(false);
+    setChatMessages(createEmptyChatMessages());
+    setChatInput('');
+    setIsChatDetailLoading(false);
+  };
+
+
+  const handleOpenPersonaGenerate = () => {
+    setIsOnboarding(false);
+    setGenTab('easy');
+    setGenEasyText(mediaInfo.overview || '');
+    setGenForm({ ...DEFAULT_GEN_FORM });
+    setGenFormError('');
+    setOccupationInput('');
+    setSegmentDraft({ name: '', value: '' });
+    setShowSegmentForm(false);
+    setGenProgress(null);
+    setGenResults([]);
+    setGenRunning(false);
+    setShowPersonaGenerateModal(true);
+  };
+
+  const handleClosePersonaGenerate = () => {
+    if (genRunning) return; // prevent close mid-generation
+    setShowPersonaGenerateModal(false);
+    if (isOnboarding) {
+      localStorage.setItem('personaai_onboarding_done', '1');
+      setIsOnboarding(false);
+    }
+    if (genResults.length > 0) {
+      refreshPersonaPool();
+    }
+  };
+
+  const handleStartGenerate = async () => {
+    // Easy mode: validate source text
+    if (genTab === 'easy' && !genEasyText.trim()) {
+      setGenFormError('記事タイトル・本文またはメディア概要を入力してください。');
+      return;
+    }
+
+    const ageMin = genForm.age_min === '' ? null : Number(genForm.age_min);
+    const ageMax = genForm.age_max === '' ? null : Number(genForm.age_max);
+    if (
+      genTab === 'segment' &&
+      (
+        (ageMin != null && Number.isNaN(ageMin)) ||
+        (ageMax != null && Number.isNaN(ageMax)) ||
+        (ageMin != null && ageMax != null && ageMin > ageMax)
+      )
+    ) {
+      setGenFormError('年齢の最小値と最大値を正しく入力してください。');
+      return;
+    }
+
+    const pendingOccupation = normalizeTagValue(occupationInput);
+    const occupations = pendingOccupation
+      ? appendUniqueTags(genForm.occupations, [pendingOccupation])
+      : genForm.occupations;
+
+    setGenFormError('');
+    setGenRunning(true);
+    setGenProgress({ personaIndex: 1, totalCount: genForm.count, step: 'starting', stepDetail: genTab === 'easy' ? 'テキストを解析中...' : '準備中...', attributeCount: 0, attributeRichness: Number(genForm.attribute_richness) || 200 });
+    setGenResults([]);
+
+    const body = {
+      count: Number(genForm.count) || 1,
+      attribute_richness: Number(genForm.attribute_richness) || 200,
+    };
+
+    if (genTab === 'easy') {
+      body.source_text = genEasyText.trim();
+    } else {
+      if (ageMin != null) body.age_min = ageMin;
+      if (ageMax != null) body.age_max = ageMax;
+      if (genForm.gender) body.gender = genForm.gender;
+      if (genForm.region_type) body.region_type = genForm.region_type;
+      if (genForm.prefectures.length > 0) body.prefectures = genForm.prefectures;
+      if (occupations.length > 0) body.occupations = occupations;
+      if (genForm.segments.length > 0) body.extra_segments = genForm.segments;
+    }
+
+    try {
+      if (occupations !== genForm.occupations || pendingOccupation) {
+        setGenForm((prev) => ({ ...prev, occupations }));
+        setOccupationInput('');
+      }
+      const res = await fetch('/api/persona-pool/generate-stream', {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body),
+      });
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // keep incomplete line
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+            if (event.done) {
+              setGenProgress(null);
+            } else if (event.step === 'completed') {
+              setGenResults((prev) => [...prev, event.persona]);
+              setAssignedPersonaIds((prev) =>
+                prev.includes(event.persona.id) ? prev : [...prev, event.persona.id]
+              );
+              setGenProgress(null);
+            } else {
+              setGenProgress({
+                personaIndex: event.persona_index,
+                totalCount: event.total_count,
+                step: event.step,
+                stepDetail: event.step_detail,
+                attributeCount: event.attribute_count ?? 0,
+                attributeRichness: event.attribute_richness ?? (Number(genForm.attribute_richness) || 200),
+              });
+            }
+          } catch {}
+        }
+      }
+    } catch (err) {
+      console.error('Generation error:', err);
+      setGenFormError('ペルソナ生成に失敗しました。');
+    } finally {
+      setGenRunning(false);
+    }
+  };
+
+  const toggleGenPrefecture = (prefecture) => {
+    setGenForm((prev) => ({
+      ...prev,
+      prefectures: prev.prefectures.includes(prefecture)
+        ? prev.prefectures.filter((item) => item !== prefecture)
+        : [...prev.prefectures, prefecture],
+    }));
+  };
+
+  const commitOccupationInput = (rawValue = occupationInput, finalizePending = false) => {
+    const parsed = splitTagInput(rawValue);
+    const nextPending = finalizePending ? '' : parsed.pending;
+    const tagsToAdd = finalizePending && parsed.pending
+      ? [...parsed.complete, parsed.pending]
+      : parsed.complete;
+
+    if (tagsToAdd.length > 0) {
+      setGenForm((prev) => ({
+        ...prev,
+        occupations: appendUniqueTags(prev.occupations, tagsToAdd),
+      }));
+    }
+    setOccupationInput(nextPending);
+  };
+
+  const removeOccupationTag = (target) => {
+    setGenForm((prev) => ({
+      ...prev,
+      occupations: prev.occupations.filter((occupation) => occupation !== target),
+    }));
+  };
+
+  const filteredPersonas = useMemo(() => {
+    return personaPool.filter((persona) => {
+      const ageOk = inAgeRange(persona.age, segmentSettings.age);
+      const genderOk = segmentSettings.gender === '指定なし' || persona.gender === segmentSettings.gender;
+      const locationOk = segmentSettings.location === '指定なし' || persona.region_type === segmentSettings.location;
+      return ageOk && genderOk && locationOk;
+    });
+  }, [personaPool, segmentSettings]);
+
   const personaById = useMemo(() => {
-    return Object.fromEntries(PERSONA_POOL.map((persona) => [persona.id, persona]));
-  }, []);
+    return Object.fromEntries(personaPool.map((persona) => [persona.id, persona]));
+  }, [personaPool]);
 
   const assignedPersonas = useMemo(() => {
     return assignedPersonaIds
@@ -1183,10 +1324,82 @@ export default function PluginConnectPage({ onBack }) {
       .filter(Boolean);
   }, [assignedPersonaIds, personaById]);
 
+  const selectedChatSummary = useMemo(() => {
+    if (!selectedChatId) return null;
+    return chatSessions.find((chat) => chat.id === selectedChatId) || null;
+  }, [chatSessions, selectedChatId]);
+
+  const visibleArticleRuns = useMemo(() => {
+    const normalizedQuery = articleSearchQuery.trim().toLowerCase();
+    const sorted = [...articleRuns].sort(
+      (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
+    );
+    if (!normalizedQuery) return sorted;
+
+    return sorted.filter((article) => {
+      const title = getArticleDisplayTitle(article).toLowerCase();
+      const url = (article.url || '').toLowerCase();
+      return title.includes(normalizedQuery) || url.includes(normalizedQuery);
+    });
+  }, [articleRuns, articleSearchQuery]);
+  const articleTableTotalPages = Math.max(1, Math.ceil(visibleArticleRuns.length / articleTablePageSize));
+  const paginatedArticleRuns = useMemo(() => {
+    const start = (articleTablePage - 1) * articleTablePageSize;
+    return visibleArticleRuns.slice(start, start + articleTablePageSize);
+  }, [visibleArticleRuns, articleTablePage, articleTablePageSize]);
+  const articleTableRangeStart = visibleArticleRuns.length === 0
+    ? 0
+    : (articleTablePage - 1) * articleTablePageSize + 1;
+  const articleTableRangeEnd = Math.min(articleTablePage * articleTablePageSize, visibleArticleRuns.length);
+
+  const selectedArticle = useMemo(() => {
+    if (!selectedArticleId) return null;
+    return articleRuns.find((article) => article.id === selectedArticleId) || null;
+  }, [articleRuns, selectedArticleId]);
+
+  const sortedSelectedFeedbacks = useMemo(() => {
+    if (!selectedArticle) return [];
+
+    const riskOrder = { high: 0, medium: 1, low: 2 };
+    return [...selectedArticle.feedbacks].sort((left, right) => {
+      const leftRisk = riskOrder[left.riskLevel] ?? 99;
+      const rightRisk = riskOrder[right.riskLevel] ?? 99;
+      if (leftRisk !== rightRisk) return leftRisk - rightRisk;
+      return left.score - right.score;
+    });
+  }, [selectedArticle]);
+
+  const selectedFeedback = useMemo(() => {
+    if (!selectedArticle || !selectedFeedbackId) return null;
+    return selectedArticle.feedbacks.find((feedback) => feedback.id === selectedFeedbackId) || null;
+  }, [selectedArticle, selectedFeedbackId]);
+
+  const selectedFeedbackPersona = useMemo(() => {
+    if (!selectedFeedback) return null;
+    return (
+      selectedFeedback.persona ||
+      dbPersonaById[selectedFeedback.personaId] ||
+      personaById[selectedFeedback.personaId] ||
+      null
+    );
+  }, [selectedFeedback, personaById, dbPersonaById]);
+
   const activePersona = useMemo(() => {
     if (!activePersonaId) return null;
     return assignedPersonas.find((persona) => persona.id === activePersonaId) || null;
   }, [activePersonaId, assignedPersonas]);
+
+  const currentChatPersona = useMemo(() => {
+    if (selectedChatSummary?.personaId) {
+      return (
+        personaById[selectedChatSummary.personaId] ||
+        dbPersonaById[selectedChatSummary.personaId] ||
+        selectedChatSummary.persona ||
+        null
+      );
+    }
+    return activePersona || null;
+  }, [selectedChatSummary, activePersona, personaById, dbPersonaById]);
 
   const previewPersona = useMemo(() => {
     if (!previewPersonaId) return null;
@@ -1207,9 +1420,6 @@ export default function PluginConnectPage({ onBack }) {
     return Array.from({ length: end - start + 1 }, (_, idx) => start + idx);
   }, [catalogPage, totalCatalogPages]);
 
-  const projectContextSummary = useMemo(() => {
-    return buildProjectContextSummary(chatMessages);
-  }, [chatMessages]);
 
   useEffect(() => {
     if (assignedPersonas.length === 0) {
@@ -1233,6 +1443,16 @@ export default function PluginConnectPage({ onBack }) {
   }, [catalogPage, totalCatalogPages]);
 
   useEffect(() => {
+    setArticleTablePage(1);
+  }, [articleSearchQuery, articleTablePageSize]);
+
+  useEffect(() => {
+    if (articleTablePage > articleTableTotalPages) {
+      setArticleTablePage(articleTableTotalPages);
+    }
+  }, [articleTablePage, articleTableTotalPages]);
+
+  useEffect(() => {
     messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages]);
 
@@ -1253,6 +1473,39 @@ export default function PluginConnectPage({ onBack }) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [previewPersonaId]);
 
+  useEffect(() => {
+    if (!currentChatPersona?.id) return;
+    requestAdvancedPersonaProfile(currentChatPersona.id);
+  }, [currentChatPersona?.id]);
+
+  useEffect(() => {
+    if (!selectedArticleId) return;
+    if (articleRuns.some((article) => article.id === selectedArticleId)) return;
+    setSelectedArticleId(null);
+    setSelectedFeedbackId(null);
+    setArticleFeedbackView(ARTICLE_FEEDBACK_VIEWS.LIST);
+  }, [articleRuns, selectedArticleId]);
+
+  useEffect(() => {
+    if (!selectedArticle || !selectedFeedbackId) return;
+    if (selectedArticle.feedbacks.some((feedback) => feedback.id === selectedFeedbackId)) return;
+    setSelectedFeedbackId(null);
+    if (articleFeedbackView === ARTICLE_FEEDBACK_VIEWS.DETAIL) {
+      setArticleFeedbackView(ARTICLE_FEEDBACK_VIEWS.RESULTS);
+    }
+  }, [selectedArticle, selectedFeedbackId, articleFeedbackView]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const nextSection = normalizeSectionId(activeSection);
+    const url = new URL(window.location.href);
+    url.searchParams.set(SECTION_QUERY_PARAM, nextSection);
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    if (nextUrl !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
+      window.history.replaceState(null, '', nextUrl);
+    }
+  }, [activeSection]);
+
   const appendMessage = (senderType, text, personaId = null) => {
     setChatMessages((prev) => [
       ...prev,
@@ -1261,63 +1514,41 @@ export default function PluginConnectPage({ onBack }) {
         senderType,
         personaId,
         text,
-        timestamp: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
+        timestamp: formatChatTimeLabel(),
       }
     ]);
   };
 
-  const registerTimeout = (callback, delay) => {
-    const timeoutId = window.setTimeout(() => {
-      timeoutIdsRef.current = timeoutIdsRef.current.filter((id) => id !== timeoutId);
-      callback();
-    }, delay);
-    timeoutIdsRef.current.push(timeoutId);
-  };
-
-  const handleBack = () => {
-    if (onBack) {
-      onBack();
-      return;
-    }
-    window.history.back();
-  };
-
   const requestAdvancedPersonaProfile = (personaId) => {
-    const persona = personaById[personaId];
-    if (!persona) return;
+    if (advancedProfilesByPersonaId[personaId] !== undefined) return;
+    if (pendingAdvancedProfileRef.current[personaId]) return;
 
-    const requirementKey = projectRequirement.trim();
-    const cachedEntry = advancedProfilesByPersonaId[personaId];
-    if (cachedEntry?.requirementKey === requirementKey) return;
-    if (pendingAdvancedProfileRef.current[personaId] === requirementKey) return;
-
-    pendingAdvancedProfileRef.current[personaId] = requirementKey;
+    pendingAdvancedProfileRef.current[personaId] = true;
     setLoadingAdvancedProfileByPersonaId((prev) => ({ ...prev, [personaId]: true }));
 
-    registerTimeout(() => {
-      if (pendingAdvancedProfileRef.current[personaId] !== requirementKey) return;
-
-      const profile = buildAdvancedPersonaProfile(persona, requirementKey);
-      setAdvancedProfilesByPersonaId((prev) => ({
-        ...prev,
-        [personaId]: { requirementKey, profile }
-      }));
-      setLoadingAdvancedProfileByPersonaId((prev) => {
-        const next = { ...prev };
-        delete next[personaId];
-        return next;
-      });
-      if (pendingAdvancedProfileRef.current[personaId] === requirementKey) {
+    fetch(`${API_BASE}/api/persona-pool/${personaId}`, { headers: authHeaders() })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        setAdvancedProfilesByPersonaId((prev) => ({
+          ...prev,
+          [personaId]: data?.structured_attributes || null,
+        }));
+      })
+      .catch(() => {
+        setAdvancedProfilesByPersonaId((prev) => ({ ...prev, [personaId]: null }));
+      })
+      .finally(() => {
         delete pendingAdvancedProfileRef.current[personaId];
-      }
-    }, ADVANCED_PROFILE_LOADING_DELAY);
+        setLoadingAdvancedProfileByPersonaId((prev) => {
+          const next = { ...prev };
+          delete next[personaId];
+          return next;
+        });
+      });
   };
 
   const resolveAdvancedProfile = (personaId) => {
-    const requirementKey = projectRequirement.trim();
-    const entry = advancedProfilesByPersonaId[personaId];
-    if (!entry || entry.requirementKey !== requirementKey) return null;
-    return entry.profile;
+    return advancedProfilesByPersonaId[personaId] ?? null;
   };
 
   const openPreviewPersona = (personaId) => {
@@ -1341,53 +1572,310 @@ export default function PluginConnectPage({ onBack }) {
     });
   };
 
-  const handleSendChat = () => {
+  const handleSendChat = async () => {
     const trimmed = chatInput.trim();
-    if (!trimmed) return;
+    if (!trimmed || isChatStreaming) return;
 
-    appendMessage('user', trimmed);
-    setChatInput('');
-
-    if (assignedPersonas.length === 0) {
+    const responder = currentChatPersona || assignedPersonas[Math.floor(Math.random() * assignedPersonas.length)];
+    if (!responder?.id) {
       appendMessage('system', '先に「設定」でペルソナを選択してください。');
       return;
     }
 
-    const responder =
-      activePersona || assignedPersonas[Math.floor(Math.random() * assignedPersonas.length)];
+    setChatInput('');
 
-    const randomReply = responder.mockReplies[Math.floor(Math.random() * responder.mockReplies.length)];
-    const withContext = isContextEnabled
-      ? `${randomReply}（要件コンテキスト: ${projectContextSummary.slice(0, 48)}...）`
-      : randomReply;
+    let chatId = selectedChatId;
+    if (!chatId) {
+      try {
+        const created = normalizeChatSession(await createPersonaChatSession(responder.id));
+        if (created) {
+          upsertChatSession(created);
+          mergePersonasIntoCache(created.persona ? [created.persona] : []);
+          setSelectedChatId(created.id);
+          chatId = created.id;
+        }
+      } catch {
+        appendMessage('system', 'チャットの作成に失敗しました。');
+        return;
+      }
+    }
 
-    registerTimeout(() => {
-      appendMessage('persona', withContext, responder.id);
-    }, 1400);
+    appendMessage('user', trimmed);
+
+    const streamId = messageIdRef.current++;
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: streamId,
+        senderType: 'persona',
+        personaId: responder.id,
+        text: '',
+        timestamp: formatChatTimeLabel(),
+      },
+    ]);
+
+    setIsChatStreaming(true);
+    try {
+      const response = await fetch(`/api/persona/chats/${chatId}/stream`, {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          message: trimmed,
+        }),
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error(`Chat stream request failed: ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let accumulated = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          const text = line.slice(6);
+          if (text === '[DONE]') break;
+          accumulated += text;
+          setChatMessages((prev) =>
+            prev.map((m) => (m.id === streamId ? { ...m, text: accumulated } : m))
+          );
+        }
+      }
+      await loadChatSessions();
+    } catch {
+      setChatMessages((prev) =>
+        prev.map((m) =>
+          m.id === streamId ? { ...m, text: 'エラーが発生しました。', senderType: 'system' } : m
+        )
+      );
+    } finally {
+      setIsChatStreaming(false);
+    }
   };
 
-  const runGeneration = (sectionId) => {
-    if (generatingSection) return;
-    if (!activePersona) return;
-
-    setGeneratingSection(sectionId);
-    registerTimeout(() => {
-      setGeneratingSection(null);
-      setGeneratedSections((prev) => ({ ...prev, [sectionId]: true }));
-    }, 1800);
+  const openArticleList = () => {
+    setArticleFeedbackView(ARTICLE_FEEDBACK_VIEWS.LIST);
+    setSelectedFeedbackId(null);
   };
 
-  const currentJourneyData = activePersona ? buildJourneyData(activePersona) : [];
-  const currentJourneyGrid = activePersona ? buildJourneyGrid(activePersona, projectContextSummary) : [];
-  const currentMentalModel = activePersona
-    ? buildMentalModel(activePersona, projectContextSummary)
-    : null;
-  const currentStoryboard = activePersona ? buildStoryboard(activePersona, projectContextSummary) : [];
-  const currentUsability = activePersona ? buildUsabilityResults(activePersona) : null;
-  const activeAdvancedProfile = activePersona ? resolveAdvancedProfile(activePersona.id) : null;
-  const activeAdvancedProfileLoading = activePersona ? Boolean(loadingAdvancedProfileByPersonaId[activePersona.id]) : false;
+  const openArticleCreate = () => {
+    setArticleInputMode(ARTICLE_INPUT_MODES.URL);
+    setArticleForm(createEmptyArticleForm());
+    setArticleFormError('');
+    setSelectedArticleId(null);
+    setSelectedFeedbackId(null);
+    setArticleFeedbackView(ARTICLE_FEEDBACK_VIEWS.CREATE);
+  };
+
+  const openArticleResults = (articleId) => {
+    setSelectedArticleId(articleId);
+    setSelectedFeedbackId(null);
+    setArticleFeedbackView(ARTICLE_FEEDBACK_VIEWS.RESULTS);
+  };
+
+  const openArticleDetail = (articleId, feedbackId) => {
+    setSelectedArticleId(articleId);
+    setSelectedFeedbackId(feedbackId);
+    setArticleFeedbackView(ARTICLE_FEEDBACK_VIEWS.DETAIL);
+  };
+
+  const handleDeleteArticle = (articleId) => {
+    setArticleRuns((prev) => prev.filter((article) => article.id !== articleId));
+  };
+
+  const handleCancelArticle = (articleId) => {
+    setArticleRuns((prev) =>
+      prev.map((article) =>
+        article.id !== articleId || article.status !== 'running' ? article : {
+          ...article,
+          status: 'cancelled',
+          updatedAt: new Date().toISOString(),
+        }
+      )
+    );
+  };
+
+  const handleCreateAndRunFeedback = () => {
+    const title = articleForm.title.trim();
+    const body = articleForm.body.trim();
+    const url = articleForm.url.trim();
+    const isUrlMode = articleInputMode === ARTICLE_INPUT_MODES.URL;
+    const targetPersonas = assignedPersonas.map(normalizePersonaSnapshot).filter(Boolean);
+    const targetPersonaIds = targetPersonas.map((persona) => persona.id).filter(Boolean);
+
+    if (targetPersonaIds.length === 0) {
+      setArticleFormError('設定で対象ペルソナを選択してください。');
+      return;
+    }
+
+    if (isUrlMode) {
+      if (!url) {
+        setArticleFormError('URLを入力してください。');
+        return;
+      }
+      if (!isLikelyHttpUrl(url)) {
+        setArticleFormError('URLは http:// または https:// から始まる形式で入力してください。');
+        return;
+      }
+    } else if (!title || !body) {
+      setArticleFormError('タイトルと本文を入力してください。');
+      return;
+    }
+
+    setArticleFormError('');
+
+    const now = new Date().toISOString();
+    const articleId = createLocalArticleId();
+    const nextArticle = {
+      id: articleId,
+      inputMode: articleInputMode,
+      title: isUrlMode ? '' : title,
+      body: isUrlMode ? '' : body,
+      url: isUrlMode ? url : '',
+      status: 'running',
+      personaCount: targetPersonaIds.length,
+      completedCount: 0,
+      feedbacks: [],
+      averageScore: null,
+      createdAt: now,
+      updatedAt: now,
+      targetPersonaIds,
+      targetPersonas,
+    };
+
+    setArticleRuns((prev) => [nextArticle, ...prev]);
+    setSelectedArticleId(articleId);
+    setSelectedFeedbackId(null);
+    setArticleFeedbackView(ARTICLE_FEEDBACK_VIEWS.RESULTS);
+    setArticleForm(createEmptyArticleForm());
+
+    (async () => {
+      try {
+        let articleContent;
+        let useMediaDescription = mediaInfo.overview || '';
+        if (isUrlMode) {
+          // URLから記事本文をスクレイピング
+          const scraped = await scrapeUrl(url);
+          articleContent = scraped.content;
+          // タイトルが取れた場合は記事エントリに反映
+          if (scraped.title) {
+            setArticleRuns((prev) =>
+              prev.map((a) => a.id !== articleId ? a : { ...a, title: scraped.title })
+            );
+          }
+          // URLモードでもメディア概要がある場合は渡す（スクレイプからdescriptionは取れないため）
+        } else {
+          articleContent = `# ${title}\n\n${body}`;
+        }
+
+        const simulation = await runSimulation({
+          articleContent,
+          personaCount: targetPersonaIds.length,
+          selectedPersonaIds: targetPersonaIds,
+          mediaDescription: useMediaDescription,
+        });
+
+        // ポーリングで進捗を監視（1秒ごと）
+        await new Promise((resolve, reject) => {
+          const timer = setInterval(async () => {
+            try {
+              // キャンセルされていたら中断
+              setArticleRuns((prev) => {
+                const article = prev.find((a) => a.id === articleId);
+                if (article?.status === 'cancelled') {
+                  clearInterval(timer);
+                  reject(new Error('cancelled'));
+                }
+                return prev;
+              });
+
+              const latest = await fetchSimulation(simulation.id);
+              setArticleRuns((prev) =>
+                prev.map((a) =>
+                  a.id !== articleId || a.status === 'cancelled' ? a : {
+                    ...a,
+                    completedCount: latest.completed_feedback_count,
+                  }
+                )
+              );
+
+              if (latest.status === 'completed' || latest.status === 'failed') {
+                clearInterval(timer);
+                resolve();
+              }
+            } catch (err) {
+              clearInterval(timer);
+              reject(err);
+            }
+          }, 1000);
+        });
+
+        const apiFeedbacks = await fetchSimulationFeedbacks(simulation.id);
+
+        const personaIds = [...new Set(apiFeedbacks.map((f) => f.persona_id))];
+        const personaMap = await fetchPersonasByIds(personaIds);
+        const displayMap = {};
+        Object.entries(personaMap).forEach(([id, p]) => {
+          displayMap[id] = dbPersonaToDisplay(p);
+        });
+        setDbPersonaById((prev) => ({ ...prev, ...displayMap }));
+
+        const feedbacks = apiFeedbacks.map((feedback) =>
+          mapApiFeedbackToLocal(
+            feedback,
+            displayMap[feedback.persona_id] || targetPersonas.find((persona) => persona.id === feedback.persona_id) || null
+          )
+        );
+        const averageScore = feedbacks.length > 0
+          ? Math.round(feedbacks.reduce((s, f) => s + f.score, 0) / feedbacks.length)
+          : null;
+
+        setArticleRuns((prev) =>
+          prev.map((article) =>
+            article.id !== articleId || article.status === 'cancelled' ? article : {
+              ...article,
+              feedbacks,
+              completedCount: feedbacks.length,
+              averageScore,
+              status: 'completed',
+              simulationId: simulation.id,
+              updatedAt: new Date().toISOString(),
+            }
+          )
+        );
+
+        const summary = await fetchSimulationSummary(simulation.id);
+        if (summary) {
+          setSimulationSummaryById((prev) => ({ ...prev, [simulation.id]: summary }));
+        }
+      } catch (err) {
+        console.error('Simulation error:', err);
+        setArticleRuns((prev) =>
+          prev.map((article) =>
+            article.id !== articleId || article.status === 'cancelled' ? article : {
+              ...article,
+              status: 'failed',
+              updatedAt: new Date().toISOString(),
+            }
+          )
+        );
+      }
+    })();
+  };
+
+  const activeAdvancedProfile = currentChatPersona ? resolveAdvancedProfile(currentChatPersona.id) : null;
+  const activeAdvancedProfileLoading = currentChatPersona ? Boolean(loadingAdvancedProfileByPersonaId[currentChatPersona.id]) : false;
   const previewAdvancedProfile = previewPersona ? resolveAdvancedProfile(previewPersona.id) : null;
   const previewAdvancedProfileLoading = previewPersona ? Boolean(loadingAdvancedProfileByPersonaId[previewPersona.id]) : false;
+  const activePersonaInterests = normalizeTaxonomyValue(currentChatPersona?.interests);
+  const previewPersonaInterests = normalizeTaxonomyValue(previewPersona?.interests);
+  const activeHasTaxonomyContent = hasTaxonomyContent(activeAdvancedProfile);
+  const previewHasTaxonomyContent = hasTaxonomyContent(previewAdvancedProfile);
 
   const renderSettings = () => {
     const outOfFilterCount = assignedPersonas.filter((persona) => !filteredPersonas.some((item) => item.id === persona.id)).length;
@@ -1395,251 +1883,100 @@ export default function PluginConnectPage({ onBack }) {
     const visibleEnd = Math.min(catalogPage * PERSONAS_PER_PAGE, filteredPersonas.length);
 
     return (
-      <section className="h-full overflow-y-auto p-5 lg:p-6">
-        <div className="space-y-5">
-          <div className="rounded-xl border border-[#333333] bg-[#1f1f1f] p-4">
-            <h2 className="mb-4 text-sm font-semibold text-[#e4e4e4]">セグメント設定</h2>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-              <div>
-                <label htmlFor="segment-country" className="mb-1 block text-xs text-[#8f8f8f]">
-                  国・地域
-                </label>
-                <select
-                  id="segment-country"
-                  value={segmentSettings.country}
-                  onChange={(event) =>
-                    setSegmentSettings((prev) => ({ ...prev, country: event.target.value }))
-                  }
-                  className="w-full rounded-md border border-[#333333] bg-[#252526] px-2 py-2 text-sm text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                >
-                  {COUNTRY_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </div>
+      <section className="h-full overflow-y-auto p-4 lg:p-5">
+        <div className="space-y-4">
+          <div>
+            <h2 className="text-lg font-semibold text-foreground">設定</h2>
+          </div>
 
+          <div className="rounded-xl border border-border p-4 space-y-3">
+            <h3 className="text-sm font-semibold text-foreground">メディア情報</h3>
+            <div className="space-y-3">
               <div>
-                <label htmlFor="segment-age" className="mb-1 block text-xs text-[#8f8f8f]">
-                  年齢
-                </label>
-                <select
-                  id="segment-age"
-                  value={segmentSettings.age}
-                  onChange={(event) =>
-                    setSegmentSettings((prev) => ({ ...prev, age: event.target.value }))
-                  }
-                  className="w-full rounded-md border border-[#333333] bg-[#252526] px-2 py-2 text-sm text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                >
-                  {AGE_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
+                <label htmlFor="media-title" className="mb-1 block text-xs text-muted-foreground">タイトル</label>
+                <input
+                  id="media-title"
+                  type="text"
+                  value={mediaInfo.title}
+                  onChange={(e) => setMediaInfo((prev) => ({ ...prev, title: e.target.value }))}
+                  placeholder="メディア名を入力"
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                />
               </div>
-
               <div>
-                <label htmlFor="segment-gender" className="mb-1 block text-xs text-[#8f8f8f]">
-                  性別
-                </label>
-                <select
-                  id="segment-gender"
-                  value={segmentSettings.gender}
-                  onChange={(event) =>
-                    setSegmentSettings((prev) => ({ ...prev, gender: event.target.value }))
-                  }
-                  className="w-full rounded-md border border-[#333333] bg-[#252526] px-2 py-2 text-sm text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                >
-                  {GENDER_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
+                <label htmlFor="media-overview" className="mb-1 block text-xs text-muted-foreground">メディア概要</label>
+                <textarea
+                  id="media-overview"
+                  value={mediaInfo.overview}
+                  onChange={(e) => setMediaInfo((prev) => ({ ...prev, overview: e.target.value }))}
+                  placeholder="メディアの概要を入力"
+                  rows={4}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary resize-none"
+                />
               </div>
-
-              <div>
-                <label htmlFor="segment-it" className="mb-1 block text-xs text-[#8f8f8f]">
-                  ITリテラシー
-                </label>
-                <select
-                  id="segment-it"
-                  value={segmentSettings.itLiteracy}
-                  onChange={(event) =>
-                    setSegmentSettings((prev) => ({ ...prev, itLiteracy: event.target.value }))
-                  }
-                  className="w-full rounded-md border border-[#333333] bg-[#252526] px-2 py-2 text-sm text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                >
-                  {IT_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="segment-occupation" className="mb-1 block text-xs text-[#8f8f8f]">
-                  職業
-                </label>
-                <select
-                  id="segment-occupation"
-                  value={segmentSettings.occupation}
-                  onChange={(event) =>
-                    setSegmentSettings((prev) => ({ ...prev, occupation: event.target.value }))
-                  }
-                  className="w-full rounded-md border border-[#333333] bg-[#252526] px-2 py-2 text-sm text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                >
-                  {OCCUPATION_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="segment-education" className="mb-1 block text-xs text-[#8f8f8f]">
-                  学歴
-                </label>
-                <select
-                  id="segment-education"
-                  value={segmentSettings.education}
-                  onChange={(event) =>
-                    setSegmentSettings((prev) => ({ ...prev, education: event.target.value }))
-                  }
-                  className="w-full rounded-md border border-[#333333] bg-[#252526] px-2 py-2 text-sm text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                >
-                  {EDUCATION_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="segment-hobby" className="mb-1 block text-xs text-[#8f8f8f]">
-                  趣味
-                </label>
-                <select
-                  id="segment-hobby"
-                  value={segmentSettings.hobby}
-                  onChange={(event) =>
-                    setSegmentSettings((prev) => ({ ...prev, hobby: event.target.value }))
-                  }
-                  className="w-full rounded-md border border-[#333333] bg-[#252526] px-2 py-2 text-sm text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                >
-                  {HOBBY_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="segment-family" className="mb-1 block text-xs text-[#8f8f8f]">
-                  家族
-                </label>
-                <select
-                  id="segment-family"
-                  value={segmentSettings.family}
-                  onChange={(event) =>
-                    setSegmentSettings((prev) => ({ ...prev, family: event.target.value }))
-                  }
-                  className="w-full rounded-md border border-[#333333] bg-[#252526] px-2 py-2 text-sm text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                >
-                  {FAMILY_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="segment-environment" className="mb-1 block text-xs text-[#8f8f8f]">
-                  環境
-                </label>
-                <select
-                  id="segment-environment"
-                  value={segmentSettings.environment}
-                  onChange={(event) =>
-                    setSegmentSettings((prev) => ({ ...prev, environment: event.target.value }))
-                  }
-                  className="w-full rounded-md border border-[#333333] bg-[#252526] px-2 py-2 text-sm text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                >
-                  {ENVIRONMENT_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="segment-commute" className="mb-1 block text-xs text-[#8f8f8f]">
-                  通勤手段
-                </label>
-                <select
-                  id="segment-commute"
-                  value={segmentSettings.commute}
-                  onChange={(event) =>
-                    setSegmentSettings((prev) => ({ ...prev, commute: event.target.value }))
-                  }
-                  className="w-full rounded-md border border-[#333333] bg-[#252526] px-2 py-2 text-sm text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                >
-                  {COMMUTE_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="segment-driving" className="mb-1 block text-xs text-[#8f8f8f]">
-                  運転
-                </label>
-                <select
-                  id="segment-driving"
-                  value={segmentSettings.driving}
-                  onChange={(event) =>
-                    setSegmentSettings((prev) => ({ ...prev, driving: event.target.value }))
-                  }
-                  className="w-full rounded-md border border-[#333333] bg-[#252526] px-2 py-2 text-sm text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                >
-                  {DRIVING_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
             </div>
           </div>
 
-          <div className="rounded-xl border border-[#333333] bg-[#1f1f1f] p-4">
+          <div className="space-y-3">
+            <h3 className="text-sm font-semibold text-foreground">セグメント設定</h3>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <div>
+                <label htmlFor="segment-age" className="mb-1 block text-xs text-muted-foreground">年齢</label>
+                <SelectField
+                  id="segment-age"
+                  value={segmentSettings.age}
+                  onChange={(event) => setSegmentSettings((prev) => ({ ...prev, age: event.target.value }))}
+                >
+                  {AGE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                </SelectField>
+              </div>
+              <div>
+                <label htmlFor="segment-gender" className="mb-1 block text-xs text-muted-foreground">性別</label>
+                <SelectField
+                  id="segment-gender"
+                  value={segmentSettings.gender}
+                  onChange={(event) => setSegmentSettings((prev) => ({ ...prev, gender: event.target.value }))}
+                >
+                  {GENDER_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                </SelectField>
+              </div>
+              <div>
+                <label htmlFor="segment-location" className="mb-1 block text-xs text-muted-foreground">居住地</label>
+                <SelectField
+                  id="segment-location"
+                  value={segmentSettings.location}
+                  onChange={(event) => setSegmentSettings((prev) => ({ ...prev, location: event.target.value }))}
+                >
+                  {LOCATION_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </SelectField>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-border bg-card p-4">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h2 className="text-sm font-semibold text-[#e4e4e4]">候補ペルソナ選択</h2>
-                <p className="text-xs text-[#8f8f8f]">
-                  全{TOTAL_PERSONA_COUNT.toLocaleString()}名中、該当セグメント: {filteredPersonas.length.toLocaleString()}名
+                <h2 className="text-sm font-semibold text-foreground">候補ペルソナ選択</h2>
+                <p className="text-xs text-muted-foreground">
+                  全{personaPool.length.toLocaleString()}名中、該当セグメント: {filteredPersonas.length.toLocaleString()}名
                 </p>
               </div>
-              <p className="text-xs text-[#8f8f8f]">
-                表示: {visibleStart.toLocaleString()}-{visibleEnd.toLocaleString()} / {filteredPersonas.length.toLocaleString()}件
-              </p>
+              <div className="ml-auto">
+                <button
+                  type="button"
+                  onClick={handleOpenPersonaGenerate}
+                  className={BUTTON_PRIMARY_CLASS}
+                >
+                  <Plus size={13} />
+                  ペルソナ新規作成
+                </button>
+              </div>
             </div>
 
-            <div className="mb-4 rounded-lg border border-[#2f5f51] bg-[#152d27] p-3">
-              <p className="mb-2 text-xs font-medium text-[#9de4cc]">選択済みペルソナ（上部固定表示）</p>
+            <div className="mb-4 rounded-lg border border-border bg-secondary p-3">
+              <p className="mb-2 text-xs font-medium text-secondary-foreground">選択済みペルソナ（上部固定表示）</p>
               {assignedPersonas.length === 0 ? (
-                <p className="text-xs text-[#87b9a8]">まだ選択されていません。下の一覧から追加してください。</p>
+                <p className="text-xs text-secondary-foreground">まだ選択されていません。下の一覧から追加してください。</p>
               ) : (
                 <div className="flex flex-wrap gap-2">
                   {assignedPersonas.map((persona) => (
@@ -1647,11 +1984,11 @@ export default function PluginConnectPage({ onBack }) {
                       key={`selected-${persona.id}`}
                       type="button"
                       onClick={() => togglePersonaAssignment(persona.id)}
-                      className="inline-flex items-center gap-2 rounded-full border border-[#3b4f48] bg-[#1f312c] px-2.5 py-1.5 text-xs text-[#b9f4df] transition-colors hover:bg-[#27453d]"
+                      className="inline-flex items-center gap-2 rounded-full border border-transparent bg-primary px-2.5 py-1.5 text-xs text-primary-foreground transition-opacity hover:opacity-90"
                     >
                       <Avatar persona={persona} size="h-6 w-6" />
-                      <span>{persona.name}</span>
-                      <span className="text-[#88cbb4]">×</span>
+                      <span>{getSelectedPersonaLabel(persona)}</span>
+                      <span className="text-primary-foreground">×</span>
                     </button>
                   ))}
                 </div>
@@ -1659,7 +1996,7 @@ export default function PluginConnectPage({ onBack }) {
             </div>
 
             {outOfFilterCount > 0 && (
-              <div className="mb-4 rounded-md border border-[#3d3a26] bg-[#2a281d] px-3 py-2 text-xs text-[#c6b676]">
+              <div className="mb-4 rounded-md border border-border bg-accent px-3 py-2 text-xs text-accent-foreground">
                 現在のセグメント外に選択済みペルソナが {outOfFilterCount} 名います。
               </div>
             )}
@@ -1679,23 +2016,22 @@ export default function PluginConnectPage({ onBack }) {
                         openPreviewPersona(persona.id);
                       }
                     }}
-                    className="cursor-pointer rounded-lg border border-[#333333] bg-[#1a1a1a] p-4 transition-colors hover:border-[#3f3f3f]"
+                    className="cursor-pointer rounded-lg border border-border bg-muted p-4 transition-colors hover:border-border"
                   >
                     <div className="mb-3 flex items-start gap-3">
                       <Avatar persona={persona} size="h-11 w-11" />
                       <div>
-                        <h3 className="text-sm font-semibold text-[#e5e5e5]">{persona.name}</h3>
-                        <p className="text-xs text-[#8f8f8f]">
-                          {persona.age}歳 / {persona.occupation}
-                        </p>
-                        <p className="text-xs text-[#8f8f8f]">
-                          {persona.country} / {persona.gender} / IT: {persona.itLiteracy}
+                        <h3 className="text-sm font-semibold text-foreground">
+                          {persona.name || persona.display_name || `${persona.age}歳・${persona.gender}`}
+                          <span className="ml-1 font-normal text-muted-foreground">({persona.age}歳・{persona.gender})</span>
+                        </h3>
+                        <p className="text-xs text-muted-foreground">
+                          {persona.one_line_summary || persona.occupation}
                         </p>
                       </div>
                     </div>
 
-                    <p className="mb-2 text-xs leading-relaxed text-[#c8c8c8]">{persona.value}</p>
-                    <p className="mb-3 text-xs leading-relaxed text-[#9b9b9b]">困っていること: {persona.painPoint}</p>
+                    <p className="mb-3 text-xs leading-relaxed text-muted-foreground line-clamp-3">{persona.personal_values}</p>
 
                     <button
                       type="button"
@@ -1705,8 +2041,8 @@ export default function PluginConnectPage({ onBack }) {
                       }}
                       className={`w-full rounded-md px-3 py-2 text-sm font-medium transition-colors ${
                         assigned
-                          ? 'border border-[#3b4f48] bg-[#1f312c] text-[#8dd7be] hover:bg-[#27453d]'
-                          : 'bg-[#047857] text-white hover:bg-[#065f46]'
+                          ? 'bg-primary text-primary-foreground hover:opacity-90'
+                          : 'border border-border bg-secondary text-secondary-foreground hover:bg-accent'
                       }`}
                     >
                       {assigned ? '選択中（クリックで解除）' : 'プロジェクトに追加'}
@@ -1716,13 +2052,17 @@ export default function PluginConnectPage({ onBack }) {
               })}
             </div>
 
+            <p className="mt-4 text-xs text-muted-foreground">
+              表示: {visibleStart.toLocaleString()}-{visibleEnd.toLocaleString()} / {filteredPersonas.length.toLocaleString()}件
+            </p>
+
             {totalCatalogPages > 1 && (
               <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
                 <button
                   type="button"
                   onClick={() => setCatalogPage((prev) => Math.max(1, prev - 1))}
                   disabled={catalogPage === 1}
-                  className="rounded-md border border-[#333333] bg-[#252526] px-3 py-1.5 text-xs text-[#cccccc] transition-colors hover:border-[#047857] disabled:cursor-not-allowed disabled:opacity-50"
+                  className={BUTTON_SECONDARY_CLASS}
                 >
                   前へ
                 </button>
@@ -1732,10 +2072,10 @@ export default function PluginConnectPage({ onBack }) {
                     key={`page-${pageNumber}`}
                     type="button"
                     onClick={() => setCatalogPage(pageNumber)}
-                    className={`rounded-md border px-3 py-1.5 text-xs transition-colors ${
+                    className={`inline-flex items-center justify-center rounded-md border px-3 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                       pageNumber === catalogPage
-                        ? 'border-[#2f5f51] bg-[#17362d] text-[#c8f5e7]'
-                        : 'border-[#333333] bg-[#252526] text-[#cccccc] hover:border-[#047857]'
+                        ? 'border-border bg-secondary text-secondary-foreground'
+                        : 'border-border bg-muted text-foreground hover:bg-accent'
                     }`}
                   >
                     {pageNumber}
@@ -1746,7 +2086,7 @@ export default function PluginConnectPage({ onBack }) {
                   type="button"
                   onClick={() => setCatalogPage((prev) => Math.min(totalCatalogPages, prev + 1))}
                   disabled={catalogPage === totalCatalogPages}
-                  className="rounded-md border border-[#333333] bg-[#252526] px-3 py-1.5 text-xs text-[#cccccc] transition-colors hover:border-[#047857] disabled:cursor-not-allowed disabled:opacity-50"
+                  className={BUTTON_SECONDARY_CLASS}
                 >
                   次へ
                 </button>
@@ -1761,1412 +2101,955 @@ export default function PluginConnectPage({ onBack }) {
   const renderPersona = () => {
     if (assignedPersonas.length === 0) {
       return (
-        <EmptyState
-          title="ペルソナが未設定です"
-          description="まず「設定」でセグメントを決め、プロジェクトにペルソナを追加してください。"
-          onOpenSettings={() => setActiveSection('settings')}
-        />
+        <section className="h-full p-4 lg:p-5">
+          <div className="flex h-full min-h-0 flex-col gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-foreground">ペルソナ</h2>
+            </div>
+
+            <div className="min-h-0 flex-1">
+              <EmptyState
+                title="ペルソナが未設定です"
+                description="まず「設定」でセグメントを決め、プロジェクトにペルソナを追加してください。"
+                onOpenSettings={() => setActiveSection('settings')}
+              />
+            </div>
+          </div>
+        </section>
       );
     }
 
     return (
       <section className="h-full p-4 lg:p-5">
-        <div className="grid h-full grid-cols-1 gap-4 xl:grid-cols-[1fr_340px]">
-          <div className="flex min-h-0 flex-col rounded-xl border border-[#333333] bg-[#1f1f1f]">
-            <div className="flex items-center justify-between border-b border-[#333333] px-4 py-3">
-              <div>
-                <h2 className="text-sm font-semibold text-[#e5e5e5]">ペルソナ相談チャット</h2>
-                <p className="text-xs text-[#8f8f8f]">要件の迷いを顧問ペルソナに相談できます。</p>
-              </div>
-              <div className="flex items-center gap-2 rounded-md border border-[#333333] bg-[#252526] px-2.5 py-1.5">
-                <span className="text-xs text-[#b8b8b8]">コンテキスト共有</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={isContextEnabled}
-                  aria-label="コンテキスト共有"
-                  onClick={() => setIsContextEnabled((prev) => !prev)}
-                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399] focus-visible:ring-offset-2 focus-visible:ring-offset-[#252526] ${
-                    isContextEnabled ? 'bg-[#047857]' : 'bg-[#4b5563]'
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
-                      isContextEnabled ? 'translate-x-4' : 'translate-x-1'
-                    }`}
-                  />
-                </button>
-              </div>
-            </div>
+        <div className="flex h-full min-h-0 flex-col gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-foreground">ペルソナ</h2>
+          </div>
 
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
-              {chatMessages.map((message) => {
-                if (message.senderType === 'system') {
-                  return (
-                    <p key={message.id} className="text-center text-[11px] text-[#8f8f8f]">
-                      {message.text}
+          <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] gap-4 xl:grid-cols-[1fr_340px] xl:grid-rows-none">
+            <div className="order-2 flex h-full min-h-0 flex-col rounded-xl border border-border bg-card xl:order-1">
+              <div className="border-b border-border px-4 py-3">
+                <div className="flex items-start justify-end gap-3">
+                  <div className="text-right">
+                    <p className="text-xs font-medium text-foreground">
+                      {selectedChatSummary ? selectedChatSummary.title : '新規チャット'}
                     </p>
-                  );
-                }
-
-                if (message.senderType === 'user') {
-                  return (
-                    <div key={message.id} className="flex justify-end">
-                      <div className="max-w-[85%] rounded-xl bg-[#047857] px-3 py-2 text-sm text-white">
-                        <p>{message.text}</p>
-                        <p className="mt-1 text-right text-[10px] text-[#d1fae5]">{message.timestamp}</p>
-                      </div>
-                    </div>
-                  );
-                }
-
-                const persona = message.personaId ? personaById[message.personaId] : null;
-                return (
-                  <div key={message.id} className="flex items-start gap-2">
-                    {persona ? <Avatar persona={persona} size="h-7 w-7" /> : null}
-                    <div className="max-w-[88%] rounded-xl border border-[#333333] bg-[#252526] px-3 py-2 text-sm text-[#cccccc]">
-                      <p className="mb-1 text-[11px] text-[#8f8f8f]">
-                        {persona ? `${persona.name} / ${persona.occupation}` : 'Persona'}
-                      </p>
-                      <p>{message.text}</p>
-                      <p className="mt-1 text-right text-[10px] text-[#888888]">{message.timestamp}</p>
-                    </div>
-                  </div>
-                );
-              })}
-              <div ref={messageEndRef} />
-            </div>
-
-            <div className="border-t border-[#333333] px-4 py-3">
-              <div className="rounded-md border border-[#333333] bg-[#252526] px-2 py-2">
-                <textarea
-                  value={chatInput}
-                  onChange={(event) => setChatInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' && !event.shiftKey) {
-                      event.preventDefault();
-                      handleSendChat();
-                    }
-                  }}
-                  rows={2}
-                  placeholder="例: 登録フローで離脱しそうな箇所を指摘して"
-                  className="w-full resize-none bg-transparent text-sm text-[#cccccc] placeholder:text-[#777777] focus:outline-none"
-                />
-                <div className="mt-2 flex items-center justify-between">
-                  <span className="text-[10px] text-[#8f8f8f]">Enter送信 / Shift+Enter改行</span>
-                  <button
-                    type="button"
-                    onClick={handleSendChat}
-                    disabled={!chatInput.trim()}
-                    className="inline-flex items-center gap-1 rounded-md bg-[#047857] px-2.5 py-1.5 text-xs text-white transition-colors hover:bg-[#065f46] disabled:cursor-not-allowed disabled:bg-[#3b3b3b] disabled:text-[#8f8f8f]"
-                  >
-                    <Send size={12} />
-                    送信
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <aside className="flex min-h-0 flex-col rounded-xl border border-[#333333] bg-[#1f1f1f] p-4">
-            <PersonaSwitcher
-              personas={assignedPersonas}
-              selectedId={activePersonaId}
-              onChange={setActivePersonaId}
-            />
-
-            {activePersona && (
-              <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto">
-                <div className="rounded-lg border border-[#333333] bg-[#1a1a1a] p-4">
-                  <div className="mb-3 flex items-start gap-3">
-                    <Avatar persona={activePersona} size="h-12 w-12" />
-                    <div>
-                      <h3 className="text-base font-semibold text-[#e5e5e5]">{activePersona.name}</h3>
-                      <p className="text-xs text-[#8f8f8f]">
-                        {activePersona.age}歳 / {activePersona.occupation}
-                      </p>
-                      <p className="text-xs text-[#8f8f8f]">
-                        {activePersona.country} / {activePersona.gender} / IT: {activePersona.itLiteracy}
-                      </p>
-                    </div>
-                  </div>
-
-                  <p className="mb-2 text-xs text-[#a5a5a5]">価値観</p>
-                  <p className="mb-3 text-sm leading-relaxed text-[#d0d0d0]">{activePersona.value}</p>
-
-                  <p className="mb-2 text-xs text-[#a5a5a5]">重視ポイント</p>
-                  <div className="flex flex-wrap gap-2">
-                    {activePersona.personality.map((trait) => (
-                      <span
-                        key={trait}
-                        className="rounded-full border border-[#2f5f51] bg-[#17362d] px-2 py-1 text-[11px] text-[#92d8bf]"
-                      >
-                        {trait}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-[#333333] bg-[#1a1a1a] p-4">
-                  <p className="mb-2 text-xs text-[#a5a5a5]">関心事</p>
-                  <p className="mb-3 text-sm leading-relaxed text-[#d0d0d0]">{activePersona.interest}</p>
-                  <p className="mb-2 text-xs text-[#a5a5a5]">困っていること</p>
-                  <p className="text-sm leading-relaxed text-[#d0d0d0]">{activePersona.painPoint}</p>
-                  <div className="mt-4">
-                    {activeAdvancedProfileLoading ? (
-                      <div className="flex min-h-[120px] items-center justify-center gap-2 rounded-md border border-[#2b2b2b] bg-[#171717] p-3">
-                        <Loader2 size={14} className="animate-spin text-[#8fceb8]" />
-                        <p className="text-xs text-[#8f8f8f]">
-                          心理・行動特性を生成しています...
-                        </p>
-                      </div>
-                    ) : activeAdvancedProfile ? (
-                      <div className="space-y-4">
-                        {ADVANCED_PERSONA_SECTIONS.map((section) => (
-                          <div key={section.title} className="rounded-md border border-[#2b2b2b] bg-[#171717] p-3">
-                            <p className="mb-2 text-[11px] font-medium text-[#8fceb8]">{section.title}</p>
-                            <div className="space-y-2">
-                              {section.fields.map((field) => (
-                                <div key={field.key}>
-                                  <p className="text-[10px] text-[#8f8f8f]">{field.label}</p>
-                                  <p className="text-xs leading-relaxed text-[#d0d0d0]">
-                                    {activeAdvancedProfile[field.key] || '未設定'}
-                                  </p>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="rounded-md border border-[#2b2b2b] bg-[#171717] px-3 py-4 text-xs text-[#8f8f8f]">
-                        このペルソナの心理・行動特性はまだ生成されていません。
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-          </aside>
-        </div>
-      </section>
-    );
-  };
-
-  const renderJourney = () => {
-    if (assignedPersonas.length === 0) {
-      return (
-        <EmptyState
-          title="ジャーニーマップを生成するペルソナがいません"
-          description="設定ページで顧問ペルソナを追加すると、ジャーニーマップを生成できます。"
-          onOpenSettings={() => setActiveSection('settings')}
-        />
-      );
-    }
-
-    const loading = generatingSection === 'journey';
-    const ready = generatedSections.journey && !loading;
-
-    return (
-      <section className="h-full overflow-y-auto p-5 lg:p-6">
-        <div className="mx-auto max-w-7xl rounded-xl border border-[#333333] bg-[#1f1f1f] p-4 lg:p-5">
-          <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold text-[#e5e5e5]">ジャーニーマップ生成</h2>
-              <p className="text-sm text-[#8f8f8f]">要件とペルソナを元に体験の流れを可視化します。</p>
-            </div>
-            <div className="flex items-end gap-4">
-              <div className="w-72 max-w-[55vw]">
-                <PersonaSwitcher
-                  personas={assignedPersonas}
-                  selectedId={activePersonaId}
-                  onChange={setActivePersonaId}
-                />
-              </div>
-              <button
-                type="button"
-                onClick={() => runGeneration('journey')}
-                disabled={loading}
-                className="inline-flex items-center gap-2 rounded-md bg-[#047857] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#065f46] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {loading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                生成する
-              </button>
-            </div>
-          </div>
-
-          {!ready && !loading && (
-            <div className="flex min-h-[280px] items-center justify-center rounded-lg border border-dashed border-[#3a3a3a] bg-[#1a1a1a] text-sm text-[#8f8f8f]">
-              「生成する」を押すと、感情推移とカスタマージャーニーマップを表示します。
-            </div>
-          )}
-
-          {loading && (
-            <div className="flex min-h-[280px] flex-col items-center justify-center gap-3 rounded-lg border border-[#333333] bg-[#1a1a1a]">
-              <Loader2 size={26} className="animate-spin text-[#047857]" />
-              <p className="text-sm text-[#8f8f8f]">ジャーニーマップを生成しています...</p>
-            </div>
-          )}
-
-          {ready && activePersona && (
-            <div className="space-y-5">
-              <div className="max-h-[70vh] overflow-auto rounded-lg border border-[#333333]">
-                <div className="w-full" style={{ minWidth: `${JOURNEY_MIN_WIDTH}px` }}>
-                  <div
-                    className="grid border-b border-[#333333]"
-                    style={{ gridTemplateColumns: `${JOURNEY_ROW_HEADER_WIDTH}px minmax(0, 1fr)` }}
-                  >
-                    <div className="border-r border-[#333333] bg-[#202020] px-3 py-3">
-                      <p className="text-xs font-semibold text-[#d2d2d2]">感情スコア</p>
-                      <p className="mt-1 text-[11px] text-[#9b9b9b]">☺ は WOW / ☹ は著しく低いポイント</p>
-                    </div>
-                    <div className="h-64 bg-[#1a1a1a] p-3">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={currentJourneyData} margin={{ top: 28, right: 0, left: 0, bottom: 34 }}>
-                          <CartesianGrid stroke="#2d2d2d" strokeDasharray="3 3" vertical={false} />
-                          <XAxis
-                            type="number"
-                            dataKey="phaseCenter"
-                            domain={[0, JOURNEY_PHASES.length]}
-                            hide
-                          />
-                          <YAxis domain={[0, 100]} hide />
-                          <Tooltip
-                            contentStyle={TOOLTIP_STYLE}
-                            formatter={(value, _, item) => [`${value}${item?.payload?.isWow ? ' (WOW)' : ''}`, '感情スコア']}
-                            labelFormatter={(_, payload) => `フェーズ: ${payload?.[0]?.payload?.phase || '-'}`}
-                          />
-                          <Line
-                            type="monotone"
-                            dataKey="score"
-                            stroke="#047857"
-                            strokeWidth={3}
-                            dot={<JourneyScoreDot />}
-                            activeDot={{ r: 6, fill: '#10b981', stroke: '#d1fae5', strokeWidth: 2 }}
-                          />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-
-                  <table className="w-full table-fixed border-collapse text-sm">
-                    <colgroup>
-                      <col style={{ width: `${JOURNEY_ROW_HEADER_WIDTH}px` }} />
-                      {JOURNEY_PHASES.map((phase) => (
-                        <col key={phase} />
-                      ))}
-                    </colgroup>
-                    <thead className="bg-[#252526]">
-                      <tr>
-                        <th className="border-b border-r border-[#333333] px-3 py-2 text-left text-[#9b9b9b]">フェーズ</th>
-                        {JOURNEY_PHASES.map((phase, index) => (
-                          <th
-                            key={phase}
-                            className={`border-b border-[#333333] px-3 py-2 text-left text-[#9b9b9b] ${
-                              index < JOURNEY_PHASES.length - 1 ? 'border-r' : ''
-                            }`}
-                          >
-                            {phase}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {currentJourneyGrid.map((row) => {
-                        const isMotivationRow = row.row === 'モチベーション';
-
-                        return (
-                          <tr key={row.row} className="align-top">
-                            <td className="border-r border-t border-[#333333] bg-[#202020] px-3 py-3 text-xs font-semibold text-[#d2d2d2]">
-                              {row.row}
-                            </td>
-                            {JOURNEY_PHASES.map((phase, index) => {
-                              const cellValue = row.values[index];
-                              const motivationMatch =
-                                typeof cellValue === 'string' ? cellValue.match(/^(\S+)\s+([\s\S]+)$/u) : null;
-                              const motivationIcon = motivationMatch?.[1] || '';
-                              const motivationText = motivationMatch?.[2] || cellValue;
-
-                              return (
-                                <td
-                                  key={`${row.row}-${phase}`}
-                                  className={`border-t border-[#333333] px-3 py-3 text-xs leading-relaxed text-[#c8c8c8] ${
-                                    index < JOURNEY_PHASES.length - 1 ? 'border-r' : ''
-                                  }`}
-                                >
-                                  {isMotivationRow && motivationIcon ? (
-                                    <div className="space-y-2">
-                                      <p className="text-center text-3xl leading-none">{motivationIcon}</p>
-                                      <p>{motivationText}</p>
-                                    </div>
-                                  ) : (
-                                    cellValue
-                                  )}
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
-    );
-  };
-
-  const renderMentalModel = () => {
-    if (assignedPersonas.length === 0) {
-      return (
-        <EmptyState
-          title="メンタルモデル生成の対象がありません"
-          description="設定ページでペルソナを追加してから実行してください。"
-          onOpenSettings={() => setActiveSection('settings')}
-        />
-      );
-    }
-
-    const loading = generatingSection === 'mentalModel';
-    const ready = generatedSections.mentalModel && !loading;
-    const phaseLayouts = currentMentalModel
-      ? currentMentalModel.phases.map((phase) => ({
-          ...phase,
-          width: phase.towers.length * 186 + (phase.towers.length - 1) * 14
-        }))
-      : [];
-    const diagramMinWidth = phaseLayouts.reduce((sum, phase) => sum + phase.width, 0) + Math.max(0, phaseLayouts.length - 1) * 24;
-
-    return (
-      <section className="h-full overflow-y-auto p-5 lg:p-6">
-        <div className="mx-auto max-w-[1250px] rounded-xl border border-[#333333] bg-[#1f1f1f] p-4 lg:p-5">
-          <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold text-[#e5e5e5]">メンタル・モデル・ダイアグラム</h2>
-              <p className="text-sm text-[#8f8f8f]">
-                上段にユーザー行動タスク（メンタルモデル）、下段に機能・コンテンツを配置してギャップを分析します。
-              </p>
-            </div>
-            <div className="flex items-end gap-4">
-              <div className="w-72 max-w-[55vw]">
-                <PersonaSwitcher
-                  personas={assignedPersonas}
-                  selectedId={activePersonaId}
-                  onChange={setActivePersonaId}
-                />
-              </div>
-              <button
-                type="button"
-                onClick={() => runGeneration('mentalModel')}
-                disabled={loading}
-                className="inline-flex items-center gap-2 rounded-md bg-[#047857] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#065f46] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {loading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                生成する
-              </button>
-            </div>
-          </div>
-
-          {!ready && !loading && (
-            <div className="flex min-h-[260px] items-center justify-center rounded-lg border border-dashed border-[#3a3a3a] bg-[#1a1a1a] text-sm text-[#8f8f8f]">
-              生成後に、タワー構造のメンタルモデルと下段の機能配置を重ねてギャップを可視化します。
-            </div>
-          )}
-
-          {loading && (
-            <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 rounded-lg border border-[#333333] bg-[#1a1a1a]">
-              <Loader2 size={26} className="animate-spin text-[#047857]" />
-              <p className="text-sm text-[#8f8f8f]">メンタルモデルを生成しています...</p>
-            </div>
-          )}
-
-          {ready && activePersona && currentMentalModel && (
-            <div className="space-y-4">
-              <div className="overflow-x-auto rounded-lg border border-[#333333] bg-[#1a1a1a] p-4">
-                <div className="space-y-4" style={{ minWidth: `${diagramMinWidth}px` }}>
-                  <div className="flex gap-6">
-                    {phaseLayouts.map((phase) => (
-                      <div key={`phase-title-${phase.id}`} className="shrink-0" style={{ width: `${phase.width}px` }}>
-                        <p className="text-center text-xs font-semibold tracking-wide text-[#9de4cc]">{phase.title}</p>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="flex gap-6">
-                    {phaseLayouts.map((phase) => (
-                      <div key={`phase-mental-${phase.id}`} className="shrink-0" style={{ width: `${phase.width}px` }}>
-                        <div className="flex min-h-[420px] items-stretch gap-[14px]">
-                          {phase.towers.map((tower) => (
-                            <div key={tower.id} className="flex w-[186px] shrink-0 flex-col">
-                              <p className="text-center text-[11px] font-medium text-[#d2d2d2]">{tower.title}</p>
-                              <div className="mt-auto">
-                                <div className="flex flex-col gap-1.5">
-                                  {tower.mentalTasks.map((task, taskIndex) => (
-                                    <div
-                                      key={`${tower.id}-task-${taskIndex}`}
-                                      className="rounded-sm border border-[#3d6a5a] bg-[#1f3a31] px-2 py-1.5 text-[11px] leading-relaxed text-[#d7f4e8]"
-                                    >
-                                      {task}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="h-[2px] bg-[#2f5f51]" />
-
-                  <div className="flex gap-6">
-                    {phaseLayouts.map((phase) => (
-                      <div key={`phase-support-${phase.id}`} className="shrink-0" style={{ width: `${phase.width}px` }}>
-                        <div className="flex min-h-[190px] items-stretch gap-[14px]">
-                          {phase.towers.map((tower) => (
-                            <div key={`${tower.id}-support`} className="flex h-full w-[186px] shrink-0 flex-col">
-                              <div className="mb-2 flex min-h-[18px] items-center justify-between">
-                                <p className="text-[10px] text-[#8f8f8f]">機能・コンテンツ</p>
-                                <span
-                                  className={`rounded-full px-2 py-0.5 text-[10px] ${
-                                    tower.coverageStatus === 'covered'
-                                      ? 'bg-[#1d3f35] text-[#96e4c8]'
-                                      : tower.coverageStatus === 'partial'
-                                        ? 'bg-[#3b3320] text-[#e4cc7a]'
-                                        : 'bg-[#3a1f24] text-[#f6b4bd]'
-                                  }`}
-                                >
-                                  {tower.coverageStatus === 'covered'
-                                    ? '対応済み'
-                                    : tower.coverageStatus === 'partial'
-                                      ? '一部対応'
-                                      : 'ギャップ'}
-                                </span>
-                              </div>
-
-                              <div className="flex flex-col gap-1.5">
-                                {tower.supportCards.length > 0 ? (
-                                  tower.supportCards.map((feature) => (
-                                    <div
-                                      key={`${tower.id}-${feature.id}`}
-                                      className="rounded-sm border border-[#34556a] bg-[#153247] px-2 py-1.5 text-[11px] leading-relaxed text-[#d4ecff]"
-                                    >
-                                      {feature.label}
-                                    </div>
-                                  ))
-                                ) : (
-                                  <div className="rounded-sm border border-dashed border-[#8a4047] bg-[#361f24] px-2 py-2 text-[11px] leading-relaxed text-[#f7bcc5]">
-                                    GAP: 対応機能が未配置
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
+                    {currentChatPersona ? (
+                      <p className="text-[11px] text-muted-foreground">{getPersonaChatLabel(currentChatPersona)}</p>
+                    ) : null}
                   </div>
                 </div>
               </div>
 
-              <div className="rounded-lg border border-[#333333] bg-[#1a1a1a] p-4">
-                <p className="mb-2 text-xs font-semibold text-[#8f8f8f]">ギャップ分析</p>
-                {currentMentalModel.gaps.length === 0 ? (
-                  <p className="text-sm text-[#c6c6c6]">現時点では主要タワーに対応機能を配置できています。</p>
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
+                {isChatDetailLoading ? (
+                  <div className="flex h-full min-h-[240px] items-center justify-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 size={14} className="animate-spin" />
+                    チャットを読み込んでいます...
+                  </div>
                 ) : (
-                  <ul className="space-y-2 text-sm">
-                    {currentMentalModel.gaps.map((gap, index) => (
-                      <li key={`${gap.towerTitle}-${index}`} className="rounded-md border border-[#3a3a3a] bg-[#222] px-3 py-2">
-                        <p className="font-medium text-[#e2e2e2]">
-                          {gap.towerTitle}（{gap.type === 'gap' ? 'ギャップ' : '一部対応'}）
-                        </p>
-                        <p className="mt-1 text-xs leading-relaxed text-[#b5b5b5]">{gap.issue}</p>
-                        <p className="mt-1 text-xs leading-relaxed text-[#9de4cc]">機会: {gap.opportunity}</p>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
-    );
-  };
+                  <>
+                    {chatMessages.map((message) => {
+                      if (message.senderType === 'system') {
+                        return (
+                          <p key={message.id} className="text-center text-[11px] text-muted-foreground">
+                            {message.text}
+                          </p>
+                        );
+                      }
 
-  const renderStoryboard = () => {
-    if (assignedPersonas.length === 0) {
-      return (
-        <EmptyState
-          title="ストーリーボード生成の対象がありません"
-          description="設定ページでペルソナを追加してから実行してください。"
-          onOpenSettings={() => setActiveSection('settings')}
-        />
-      );
-    }
-
-    const loading = generatingSection === 'storyboard';
-    const ready = generatedSections.storyboard && !loading;
-
-    return (
-      <section className="h-full overflow-y-auto p-5 lg:p-6">
-        <div className="mx-auto max-w-7xl rounded-xl border border-[#333333] bg-[#1f1f1f] p-4 lg:p-5">
-          <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold text-[#e5e5e5]">ストーリーボード</h2>
-              <p className="text-sm text-[#8f8f8f]">ユーザーの行動文脈をシーンとして可視化します。</p>
-            </div>
-            <div className="flex items-end gap-4">
-              <div className="w-72 max-w-[55vw]">
-                <PersonaSwitcher
-                  personas={assignedPersonas}
-                  selectedId={activePersonaId}
-                  onChange={setActivePersonaId}
-                />
-              </div>
-              <button
-                type="button"
-                onClick={() => runGeneration('storyboard')}
-                disabled={loading}
-                className="inline-flex items-center gap-2 rounded-md bg-[#047857] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#065f46] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {loading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                生成する
-              </button>
-            </div>
-          </div>
-
-          {!ready && !loading && (
-            <div className="flex min-h-[260px] items-center justify-center rounded-lg border border-dashed border-[#3a3a3a] bg-[#1a1a1a] text-sm text-[#8f8f8f]">
-              生成後に5コマのストーリーボードを表示します。
-            </div>
-          )}
-
-          {loading && (
-            <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 rounded-lg border border-[#333333] bg-[#1a1a1a]">
-              <Loader2 size={26} className="animate-spin text-[#047857]" />
-              <p className="text-sm text-[#8f8f8f]">ストーリーボードを生成しています...</p>
-            </div>
-          )}
-
-          {ready && activePersona && (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {currentStoryboard.map((scene) => (
-                <article key={scene.scene} className="rounded-lg border border-[#333333] bg-[#1a1a1a] p-4">
-                  <div className="mb-3 aspect-video rounded-md border border-[#34554a] bg-gradient-to-br from-[#17362d] to-[#1f1f1f] p-3">
-                    <p className="text-xs text-[#92d8bf]">{scene.scene}</p>
-                    <p className="mt-1 text-sm font-semibold text-[#e0e0e0]">{scene.title}</p>
-                  </div>
-                  <p className="text-sm leading-relaxed text-[#cfcfcf]">{scene.description}</p>
-                </article>
-              ))}
-            </div>
-          )}
-        </div>
-      </section>
-    );
-  };
-
-  const renderUsability = () => {
-    if (assignedPersonas.length === 0) {
-      return (
-        <EmptyState
-          title="ユーザビリティテストの対象がありません"
-          description="設定ページでペルソナを追加してから実行してください。"
-          onOpenSettings={() => setActiveSection('settings')}
-        />
-      );
-    }
-
-    const loading = generatingSection === 'usability';
-    const ready = generatedSections.usability && !loading;
-
-    return (
-      <section className="h-full overflow-y-auto p-5 lg:p-6">
-        <div className="w-full rounded-xl border border-[#333333] bg-[#1f1f1f] p-4 lg:p-5">
-          <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold text-[#e5e5e5]">ユーザビリティテスト</h2>
-              <p className="text-sm text-[#8f8f8f]">ペルソナの個性に合わせた模擬テスト結果を生成します。</p>
-            </div>
-            <div className="flex items-end gap-4">
-              <div className="w-72 max-w-[55vw]">
-                <PersonaSwitcher
-                  personas={assignedPersonas}
-                  selectedId={activePersonaId}
-                  onChange={setActivePersonaId}
-                />
-              </div>
-              <button
-                type="button"
-                onClick={() => runGeneration('usability')}
-                disabled={loading}
-                className="inline-flex items-center gap-2 rounded-md bg-[#047857] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#065f46] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {loading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                テスト実行
-              </button>
-            </div>
-          </div>
-
-          {!ready && !loading && (
-            <div className="flex min-h-[240px] items-center justify-center rounded-lg border border-dashed border-[#3a3a3a] bg-[#1a1a1a] text-sm text-[#8f8f8f]">
-              テストを実行すると、完了率や課題ポイントを表示します。
-            </div>
-          )}
-
-          {loading && (
-            <div className="flex min-h-[240px] flex-col items-center justify-center gap-3 rounded-lg border border-[#333333] bg-[#1a1a1a]">
-              <Loader2 size={26} className="animate-spin text-[#047857]" />
-              <p className="text-sm text-[#8f8f8f]">ユーザビリティテストを実行中...</p>
-            </div>
-          )}
-
-          {ready && activePersona && currentUsability && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                <div className="rounded-lg border border-[#333333] bg-[#1a1a1a] p-4">
-                  <p className="text-xs text-[#8f8f8f]">タスク完了率</p>
-                  <p className="mt-1 text-2xl font-semibold text-[#e5e5e5]">{currentUsability.completionRate}%</p>
-                </div>
-                <div className="rounded-lg border border-[#333333] bg-[#1a1a1a] p-4">
-                  <p className="text-xs text-[#8f8f8f]">画面理解スコア</p>
-                  <p className="mt-1 text-2xl font-semibold text-[#e5e5e5]">{currentUsability.clarityScore}</p>
-                </div>
-                <div className="rounded-lg border border-[#333333] bg-[#1a1a1a] p-4">
-                  <p className="text-xs text-[#8f8f8f]">継続利用意向</p>
-                  <p className="mt-1 text-2xl font-semibold text-[#e5e5e5]">{currentUsability.confidenceScore}</p>
-                </div>
-              </div>
-
-              <div className="overflow-x-auto rounded-lg border border-[#333333]">
-                <table className="w-full min-w-[1120px] border-collapse text-sm">
-                  <thead className="bg-[#252526]">
-                    <tr>
-                      <th className="border-b border-r border-[#333333] px-3 py-2 text-left text-[#9b9b9b]">テストタスク</th>
-                      <th className="border-b border-r border-[#333333] px-3 py-2 text-left text-[#9b9b9b]">サブタスク</th>
-                      <th className="border-b border-r border-[#333333] px-3 py-2 text-left text-[#9b9b9b]">完了判定</th>
-                      <th className="border-b border-r border-[#333333] px-3 py-2 text-left text-[#9b9b9b]">迷ったポイント</th>
-                      <th className="border-b border-[#333333] px-3 py-2 text-left text-[#9b9b9b]">重要度</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {currentUsability.tasks.map((task) => (
-                      <React.Fragment key={task.task}>
-                        {task.subtasks.map((subtask, index) => (
-                          <tr key={`${task.task}-${subtask.label}`}>
-                            {index === 0 && (
-                              <td
-                                rowSpan={task.subtasks.length}
-                                className="border-t border-r border-[#333333] bg-[#1d1d1d] px-3 py-3 align-top text-[#d1d1d1]"
-                              >
-                                <p className="font-medium">{task.task}</p>
-                                <p className="mt-1 text-xs text-[#9f9f9f]">
-                                  {task.completedSubtaskCount}/{task.subtasks.length} 完了
-                                </p>
-                                <p className="mt-1 text-xs text-[#9f9f9f]">
-                                  迷い発生: {task.confusedSubtaskCount}件
-                                </p>
-                              </td>
-                            )}
-                            <td className="border-t border-r border-[#333333] px-3 py-3 text-[#d1d1d1]">
-                              {subtask.label}
-                            </td>
-                            <td className="border-t border-r border-[#333333] px-3 py-3">
-                              <span
-                                className={`rounded-full px-2 py-1 text-xs ${
-                                  subtask.completed
-                                    ? 'bg-[#23312b] text-[#8dd7be]'
-                                    : 'bg-[#3a2323] text-[#e7aaaa]'
-                                }`}
-                              >
-                                {subtask.status}
-                              </span>
-                            </td>
-                            <td className="border-t border-r border-[#333333] px-3 py-3 text-xs leading-relaxed text-[#c3c3c3]">
-                              {subtask.confusionPoint || '迷いなし'}
-                            </td>
-                            <td className="border-t border-[#333333] px-3 py-3">
-                              <span
-                                className={`rounded-full px-2 py-1 text-xs ${
-                                  subtask.severity === '高'
-                                    ? 'bg-[#3a2323] text-[#f1b5b5]'
-                                    : subtask.severity === '中'
-                                      ? 'bg-[#3b3320] text-[#d5bb67]'
-                                      : 'bg-[#23312b] text-[#8dd7be]'
-                                }`}
-                              >
-                                {subtask.severity}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                      </React.Fragment>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
-    );
-  };
-
-  const renderSurvey = () => {
-    const addQuestion = () => {
-      setSurveyQuestions((prev) => [
-        ...prev,
-        { id: Date.now(), text: '', type: 'single', options: ['', ''] }
-      ]);
-    };
-
-    const removeQuestion = (id) => {
-      setSurveyQuestions((prev) => prev.filter((q) => q.id !== id));
-    };
-
-    const updateQuestion = (id, field, value) => {
-      setSurveyQuestions((prev) =>
-        prev.map((q) => (q.id === id ? { ...q, [field]: value } : q))
-      );
-    };
-
-    const addOption = (id) => {
-      setSurveyQuestions((prev) =>
-        prev.map((q) => (q.id === id ? { ...q, options: [...q.options, ''] } : q))
-      );
-    };
-
-    const updateOption = (qId, idx, value) => {
-      setSurveyQuestions((prev) =>
-        prev.map((q) =>
-          q.id === qId
-            ? { ...q, options: q.options.map((opt, i) => (i === idx ? value : opt)) }
-            : q
-        )
-      );
-    };
-
-    const removeOption = (qId, idx) => {
-      setSurveyQuestions((prev) =>
-        prev.map((q) =>
-          q.id === qId ? { ...q, options: q.options.filter((_, i) => i !== idx) } : q
-        )
-      );
-    };
-
-    const runSurvey = () => {
-      setSurveyLoading(true);
-      setSurveyTab('results');
-      setTimeout(() => setSurveyLoading(false), 3000);
-    };
-
-    const TABS = [
-      { id: 'create', label: 'アンケート作成' },
-      { id: 'results', label: '結果' }
-    ];
-
-    const totalRespondents = Math.max(100, Math.round(filteredPersonas.length * 0.06));
-    const results = buildMockSurveyResults(surveyQuestions, totalRespondents);
-
-    const surveyDetailQuestion = results.find((r) => r.id === surveyDetailQuestionId) ?? null;
-
-    const MODAL_PAGE_SIZE = 20;
-    // アンケート実施対象 = filteredPersonas の先頭 totalRespondents 件
-    const allRespondents = filteredPersonas.slice(0, totalRespondents);
-    const allRespondentAnswers = surveyDetailQuestion
-      ? buildRespondentAnswers(surveyDetailQuestion, allRespondents)
-      : [];
-
-    // フィルタリング
-    const filteredRespondentAnswers = allRespondentAnswers.filter(({ persona, answer }) => {
-      if (surveyDetailFilter.gender && persona.gender !== surveyDetailFilter.gender) return false;
-      if (surveyDetailFilter.itLiteracy && persona.itLiteracy !== surveyDetailFilter.itLiteracy) return false;
-      if (surveyDetailFilter.search) {
-        const q = surveyDetailFilter.search.toLowerCase();
-        if (!persona.name.toLowerCase().includes(q) && !answer.toLowerCase().includes(q)) return false;
-      }
-      return true;
-    });
-
-    // ソート
-    const sortedRespondentAnswers = surveyDetailSort.key === 'index'
-      ? filteredRespondentAnswers
-      : [...filteredRespondentAnswers].sort((a, b) => {
-          const dir = surveyDetailSort.dir === 'asc' ? 1 : -1;
-          if (surveyDetailSort.key === 'name') return dir * a.persona.name.localeCompare(b.persona.name, 'ja');
-          if (surveyDetailSort.key === 'age') return dir * (a.persona.age - b.persona.age);
-          if (surveyDetailSort.key === 'answer') return dir * a.answer.localeCompare(b.answer, 'ja');
-          return 0;
-        });
-
-    // ページネーション
-    const modalTotalPages = Math.max(1, Math.ceil(sortedRespondentAnswers.length / MODAL_PAGE_SIZE));
-    const modalCurrentPage = Math.min(surveyDetailPage, modalTotalPages);
-    const visibleRespondentAnswers = sortedRespondentAnswers.slice(
-      (modalCurrentPage - 1) * MODAL_PAGE_SIZE,
-      modalCurrentPage * MODAL_PAGE_SIZE
-    );
-
-    // ソートトグル
-    const toggleDetailSort = (key) => {
-      if (surveyDetailSort.key === key) {
-        setSurveyDetailSort((s) => ({ key, dir: s.dir === 'asc' ? 'desc' : 'asc' }));
-      } else {
-        setSurveyDetailSort({ key, dir: 'asc' });
-      }
-      setSurveyDetailPage(1);
-    };
-    const sortIndicator = (key) => {
-      if (surveyDetailSort.key !== key) return <span className="ml-0.5 text-[#4a4a4a]">⇅</span>;
-      return <span className="ml-0.5 text-[#047857]">{surveyDetailSort.dir === 'asc' ? '▲' : '▼'}</span>;
-    };
-
-    // 質問詳細を開く（state リセット付き）
-    const openSurveyDetail = (id) => {
-      setSurveyDetailQuestionId(id);
-      setSurveyDetailPage(1);
-      setSurveyDetailSort({ key: 'index', dir: 'asc' });
-      setSurveyDetailFilter({ gender: '', itLiteracy: '', search: '' });
-    };
-
-    return (
-      <>
-      <section className="h-full overflow-y-auto p-5 lg:p-6">
-        {/* ヘッダー */}
-        <div className="mb-5">
-          <h2 className="text-lg font-semibold text-[#e5e5e5]">ユーザー調査</h2>
-          <p className="text-sm text-[#8f8f8f]">アンケートの作成・配信・結果分析を行います。</p>
-        </div>
-
-        {/* タブ */}
-        <div className="mb-5 flex gap-1 rounded-lg border border-[#333333] bg-[#1f1f1f] p-1 w-fit">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setSurveyTab(tab.id)}
-              className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
-                surveyTab === tab.id
-                  ? 'bg-[#047857] text-white'
-                  : 'text-[#a3a3a3] hover:text-[#d2d2d2]'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        {/* ====== アンケート作成タブ ====== */}
-        {surveyTab === 'create' && (
-          <div className="space-y-5">
-            {/* タイトル */}
-            <div className="rounded-xl border border-[#333333] bg-[#1f1f1f] p-4">
-              <label className="mb-1 block text-xs text-[#8f8f8f]">アンケートタイトル</label>
-              <input
-                type="text"
-                value={surveyTitle}
-                onChange={(e) => setSurveyTitle(e.target.value)}
-                className="w-full rounded-md border border-[#333333] bg-[#252526] px-3 py-2 text-sm text-[#cccccc] focus:border-[#047857] focus:outline-none"
-              />
-            </div>
-
-            {/* 質問リスト */}
-            <div className="space-y-4">
-              {surveyQuestions.map((q, index) => (
-                <div key={q.id} className="rounded-xl border border-[#333333] bg-[#1f1f1f] p-4">
-                  <div className="mb-3 flex items-start justify-between gap-3">
-                    <span className="mt-1 text-xs font-semibold text-[#047857]">Q{index + 1}</span>
-                    <input
-                      type="text"
-                      placeholder="質問文を入力..."
-                      value={q.text}
-                      onChange={(e) => updateQuestion(q.id, 'text', e.target.value)}
-                      className="flex-1 rounded-md border border-[#333333] bg-[#252526] px-3 py-2 text-sm text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                    />
-                    <select
-                      value={q.type}
-                      onChange={(e) => updateQuestion(q.id, 'type', e.target.value)}
-                      className="rounded-md border border-[#333333] bg-[#252526] px-2 py-2 text-sm text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                    >
-                      {QUESTION_TYPES.map((t) => (
-                        <option key={t.value} value={t.value}>{t.label}</option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      onClick={() => removeQuestion(q.id)}
-                      className="mt-1 text-[#6b6b6b] hover:text-[#e05252] transition-colors"
-                    >
-                      <Trash2 size={15} />
-                    </button>
-                  </div>
-
-                  {/* 選択肢エディタ (single / multi) */}
-                  {(q.type === 'single' || q.type === 'multi') && (
-                    <div className="mt-2 space-y-2 pl-5">
-                      {q.options.map((opt, i) => (
-                        <div key={i} className="flex items-center gap-2">
-                          <span className="text-xs text-[#6b6b6b]">{i + 1}.</span>
-                          <input
-                            type="text"
-                            placeholder={`選択肢 ${i + 1}`}
-                            value={opt}
-                            onChange={(e) => updateOption(q.id, i, e.target.value)}
-                            className="flex-1 rounded border border-[#333333] bg-[#252526] px-2 py-1 text-xs text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => removeOption(q.id, i)}
-                            className="text-[#6b6b6b] hover:text-[#e05252] transition-colors"
-                          >
-                            <X size={12} />
-                          </button>
-                        </div>
-                      ))}
-                      <button
-                        type="button"
-                        onClick={() => addOption(q.id)}
-                        className="flex items-center gap-1 text-xs text-[#047857] hover:text-[#065f46] transition-colors"
-                      >
-                        <Plus size={12} />
-                        選択肢を追加
-                      </button>
-                    </div>
-                  )}
-
-                  {/* 評価スケール プレビュー */}
-                  {q.type === 'rating' && (
-                    <div className="mt-2 flex gap-2 pl-5">
-                      {[1, 2, 3, 4, 5].map((n) => (
-                        <div key={n} className="flex h-8 w-8 items-center justify-center rounded border border-[#333333] bg-[#252526] text-xs text-[#8f8f8f]">
-                          {n}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* 自由記述 プレビュー */}
-                  {q.type === 'text' && (
-                    <div className="mt-2 pl-5">
-                      <div className="h-14 rounded border border-dashed border-[#3a3a3a] bg-[#1a1a1a] p-2 text-xs text-[#6b6b6b]">
-                        自由記述欄（回答者が入力）
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-
-            <button
-              type="button"
-              onClick={addQuestion}
-              className="flex items-center gap-2 rounded-md border border-dashed border-[#3a3a3a] px-4 py-2.5 text-sm text-[#8f8f8f] hover:border-[#047857] hover:text-[#047857] transition-colors"
-            >
-              <Plus size={14} />
-              質問を追加
-            </button>
-
-            {/* 実施ボタン */}
-            <div className="rounded-xl border border-[#333333] bg-[#1f1f1f] p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-[#e4e4e4]">アンケートを実施</p>
-                  <p className="mt-0.5 text-xs text-[#8f8f8f]">
-                    対象セグメント: {filteredPersonas.length.toLocaleString()}人 ／ 質問数: {surveyQuestions.length}問
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={runSurvey}
-                  disabled={filteredPersonas.length === 0}
-                  className="inline-flex items-center gap-2 rounded-md bg-[#047857] px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-[#065f46] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Send size={14} />
-                  アンケートを実施
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ====== 結果タブ ====== */}
-        {surveyTab === 'results' && (
-          <div className="space-y-5">
-            {surveyLoading ? (
-              <div className="flex min-h-[320px] flex-col items-center justify-center gap-4 rounded-xl border border-[#333333] bg-[#1f1f1f]">
-                <Loader2 size={28} className="animate-spin text-[#047857]" />
-                <p className="text-sm text-[#8f8f8f]">アンケートを集計中...</p>
-              </div>
-            ) : (
-              <>
-                {/* 総回答者数 */}
-                <div className="rounded-xl border border-[#333333] bg-[#1f1f1f] p-4">
-                  <p className="text-xs text-[#8f8f8f]">総回答者数（セグメント対象）</p>
-                  <p className="mt-1 text-2xl font-semibold text-[#e5e5e5]">{totalRespondents.toLocaleString()} 人</p>
-                </div>
-
-                {/* 質問ごとのグラフ */}
-                {results.map((result, idx) => (
-                  <div key={result.id} className="rounded-xl border border-[#333333] bg-[#1f1f1f] p-4">
-                    <div className="mb-4 flex flex-wrap items-center gap-2">
-                      <span className="rounded bg-[#047857] px-2 py-0.5 text-xs font-semibold text-white">Q{idx + 1}</span>
-                      <span className="text-sm font-medium text-[#e4e4e4]">{result.text || `質問 ${idx + 1}`}</span>
-                      <span className="ml-auto text-xs text-[#6b6b6b]">{QUESTION_TYPES.find((t) => t.value === result.type)?.label}</span>
-                    </div>
-
-                    {/* 単一選択 → 円グラフ */}
-                    {result.type === 'single' && result.chartData.length > 0 && (
-                      <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-                        <div className="shrink-0 sm:w-52">
-                          <ResponsiveContainer width="100%" height={200}>
-                            <PieChart>
-                              <Pie data={result.chartData} dataKey="count" cx="50%" cy="50%" outerRadius={80} paddingAngle={2}>
-                                {result.chartData.map((_, i) => (
-                                  <Cell key={i} fill={SURVEY_CHART_COLORS[i % SURVEY_CHART_COLORS.length]} />
-                                ))}
-                              </Pie>
-                              <Tooltip formatter={(v, name) => [`${v.toLocaleString()}人`, name]} />
-                            </PieChart>
-                          </ResponsiveContainer>
-                        </div>
-                        <div className="flex-1 space-y-2">
-                          {result.chartData.map((item, i) => (
-                            <div key={i} className="flex items-center gap-2">
-                              <div className="h-3 w-3 shrink-0 rounded-sm" style={{ background: SURVEY_CHART_COLORS[i % SURVEY_CHART_COLORS.length] }} />
-                              <span className="flex-1 text-xs text-[#cccccc]">{item.name}</span>
-                              <span className="text-xs text-[#8f8f8f]">{item.count.toLocaleString()}人</span>
-                              <span className="w-12 text-right text-xs text-[#6b6b6b]">{item.pct}%</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* 複数選択 → 横棒グラフ */}
-                    {result.type === 'multi' && result.chartData.length > 0 && (
-                      <ResponsiveContainer width="100%" height={result.chartData.length * 44 + 16}>
-                        <BarChart data={result.chartData} layout="vertical" margin={{ top: 0, right: 48, left: 0, bottom: 0 }}>
-                          <XAxis type="number" tick={{ fill: '#8f8f8f', fontSize: 11 }} tickFormatter={(v) => `${v}人`} />
-                          <YAxis type="category" dataKey="name" width={120} tick={{ fill: '#cccccc', fontSize: 11 }} />
-                          <Tooltip formatter={(v) => [`${v.toLocaleString()}人`]} />
-                          <Bar dataKey="count" radius={[0, 3, 3, 0]}>
-                            {result.chartData.map((_, i) => (
-                              <Cell key={i} fill={SURVEY_CHART_COLORS[i % SURVEY_CHART_COLORS.length]} />
-                            ))}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    )}
-
-                    {/* 評価スケール → 縦棒グラフ */}
-                    {result.type === 'rating' && (
-                      <div>
-                        <p className="mb-3 text-sm text-[#8f8f8f]">
-                          平均評価: <span className="font-semibold text-[#e5e5e5]">{result.avg} / 5</span>
-                        </p>
-                        <ResponsiveContainer width="100%" height={180}>
-                          <BarChart data={result.chartData} margin={{ top: 0, right: 16, left: 0, bottom: 0 }}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#2a2a2a" vertical={false} />
-                            <XAxis dataKey="name" tick={{ fill: '#8f8f8f', fontSize: 11 }} />
-                            <YAxis tick={{ fill: '#8f8f8f', fontSize: 11 }} tickFormatter={(v) => `${v}人`} />
-                            <Tooltip formatter={(v) => [`${v.toLocaleString()}人`]} />
-                            <Bar dataKey="count" fill="#047857" radius={[3, 3, 0, 0]} />
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </div>
-                    )}
-
-                    {/* 自由記述 → テーマ別横棒グラフ */}
-                    {result.type === 'text' && (
-                      <ResponsiveContainer width="100%" height={result.chartData.length * 44 + 16}>
-                        <BarChart data={result.chartData} layout="vertical" margin={{ top: 0, right: 48, left: 0, bottom: 0 }}>
-                          <XAxis type="number" tick={{ fill: '#8f8f8f', fontSize: 11 }} tickFormatter={(v) => `${v}件`} />
-                          <YAxis type="category" dataKey="name" width={140} tick={{ fill: '#cccccc', fontSize: 11 }} />
-                          <Tooltip formatter={(v) => [`${v.toLocaleString()}件`]} />
-                          <Bar dataKey="count" fill="#3b82f6" radius={[0, 3, 3, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    )}
-                  </div>
-                ))}
-
-                {/* 質問別サマリーテーブル */}
-                <div className="rounded-xl border border-[#333333] bg-[#1f1f1f] p-4">
-                  <h3 className="mb-4 text-sm font-semibold text-[#e4e4e4]">質問別サマリー</h3>
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[640px] border-collapse text-sm">
-                      <thead className="bg-[#252526]">
-                        <tr>
-                          <th className="border-b border-r border-[#333333] px-3 py-2 text-left text-xs text-[#9b9b9b]">Q#</th>
-                          <th className="border-b border-r border-[#333333] px-3 py-2 text-left text-xs text-[#9b9b9b]">質問</th>
-                          <th className="border-b border-r border-[#333333] px-3 py-2 text-left text-xs text-[#9b9b9b]">形式</th>
-                          <th className="border-b border-r border-[#333333] px-3 py-2 text-left text-xs text-[#9b9b9b]">1位 / 平均評価</th>
-                          <th className="border-b border-r border-[#333333] px-3 py-2 text-left text-xs text-[#9b9b9b]">2位</th>
-                          <th className="border-b border-[#333333] px-3 py-2 text-left text-xs text-[#9b9b9b]">回答者数</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {results.map((result, idx) => {
-                          const d = result.chartData;
-                          let col1 = '-';
-                          let col2 = '-';
-                          if (result.type === 'rating') {
-                            col1 = `平均 ${result.avg} 点`;
-                            const mode = d.reduce((a, b) => (b.count > a.count ? b : a), d[0]);
-                            col2 = mode ? `最頻値: ${mode.name}` : '-';
-                          } else if (d.length > 0) {
-                            col1 = `${d[0].name} (${d[0].pct ?? Math.round((d[0].count / totalRespondents) * 100)}%)`;
-                            col2 = d[1] ? `${d[1].name} (${d[1].pct ?? Math.round((d[1].count / totalRespondents) * 100)}%)` : '-';
-                          }
-                          return (
-                            <tr
-                              key={result.id}
-                              className={`cursor-pointer transition-colors hover:bg-[#252526] ${idx % 2 === 0 ? 'bg-[#1a1a1a]' : 'bg-[#1f1f1f]'}`}
-                              onClick={() => openSurveyDetail(result.id)}
-                            >
-                              <td className="border-b border-r border-[#2a2a2a] px-3 py-2 text-xs font-semibold text-[#047857]">Q{idx + 1}</td>
-                              <td className="border-b border-r border-[#2a2a2a] px-3 py-2 text-xs text-[#cccccc]" style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{result.text || `質問 ${idx + 1}`}</td>
-                              <td className="border-b border-r border-[#2a2a2a] px-3 py-2 text-xs text-[#8f8f8f]">{QUESTION_TYPES.find((t) => t.value === result.type)?.label}</td>
-                              <td className="border-b border-r border-[#2a2a2a] px-3 py-2 text-xs text-[#cccccc]">{col1}</td>
-                              <td className="border-b border-r border-[#2a2a2a] px-3 py-2 text-xs text-[#8f8f8f]">{col2}</td>
-                              <td className="border-b border-[#2a2a2a] px-3 py-2 text-xs text-[#cccccc]">
-                                <div className="flex items-center justify-between gap-2">
-                                  {totalRespondents.toLocaleString()}人
-                                  <ChevronRight size={12} className="text-[#6b6b6b]" />
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-        )}
-      </section>
-
-      {/* 質問詳細モーダル（回答者別表示） */}
-      {surveyDetailQuestion && (() => {
-        const qIdx = results.findIndex((r) => r.id === surveyDetailQuestion.id);
-        return (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-            onClick={() => setSurveyDetailQuestionId(null)}
-          >
-            <div
-              className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-[#333333] bg-[#1f1f1f]"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {/* ヘッダー */}
-              <div className="shrink-0 flex items-start justify-between gap-3 border-b border-[#333333] bg-[#1f1f1f] px-5 py-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded bg-[#047857] px-2 py-0.5 text-xs font-semibold text-white">Q{qIdx + 1}</span>
-                  <span className="text-sm font-medium text-[#e4e4e4]">{surveyDetailQuestion.text || `質問 ${qIdx + 1}`}</span>
-                  <span className="text-xs text-[#6b6b6b]">{QUESTION_TYPES.find((t) => t.value === surveyDetailQuestion.type)?.label}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setSurveyDetailQuestionId(null)}
-                  aria-label="閉じる"
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[#333333] text-[#bdbdbd] transition-colors hover:bg-[#252526] hover:text-[#e0e0e0]"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-
-              {/* フィルターバー */}
-              <div className="shrink-0 flex flex-wrap items-center gap-2 border-b border-[#2a2a2a] bg-[#1a1a1a] px-5 py-3">
-                <div className="relative flex-1 min-w-[160px]">
-                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#6b6b6b]" />
-                  <input
-                    type="text"
-                    placeholder="名前・回答で検索..."
-                    value={surveyDetailFilter.search}
-                    onChange={(e) => { setSurveyDetailFilter((f) => ({ ...f, search: e.target.value })); setSurveyDetailPage(1); }}
-                    className="w-full rounded-md border border-[#333333] bg-[#252526] py-1.5 pl-7 pr-3 text-xs text-[#cccccc] placeholder-[#5a5a5a] focus:border-[#047857] focus:outline-none"
-                  />
-                </div>
-                <select
-                  value={surveyDetailFilter.gender}
-                  onChange={(e) => { setSurveyDetailFilter((f) => ({ ...f, gender: e.target.value })); setSurveyDetailPage(1); }}
-                  className="rounded-md border border-[#333333] bg-[#252526] px-2.5 py-1.5 text-xs text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                >
-                  <option value="">性別: すべて</option>
-                  {GENDER_OPTIONS.filter((g) => g !== '指定なし').map((g) => <option key={g} value={g}>{g}</option>)}
-                </select>
-                <select
-                  value={surveyDetailFilter.itLiteracy}
-                  onChange={(e) => { setSurveyDetailFilter((f) => ({ ...f, itLiteracy: e.target.value })); setSurveyDetailPage(1); }}
-                  className="rounded-md border border-[#333333] bg-[#252526] px-2.5 py-1.5 text-xs text-[#cccccc] focus:border-[#047857] focus:outline-none"
-                >
-                  <option value="">ITリテラシー: すべて</option>
-                  {IT_OPTIONS.filter((o) => o !== '指定なし').map((o) => <option key={o} value={o}>{o}</option>)}
-                </select>
-                {(surveyDetailFilter.search || surveyDetailFilter.gender || surveyDetailFilter.itLiteracy) && (
-                  <button
-                    type="button"
-                    onClick={() => { setSurveyDetailFilter({ gender: '', itLiteracy: '', search: '' }); setSurveyDetailPage(1); }}
-                    className="text-xs text-[#8f8f8f] hover:text-[#cccccc] transition-colors"
-                  >
-                    リセット
-                  </button>
-                )}
-                <span className="ml-auto text-xs text-[#6b6b6b]">
-                  {filteredRespondentAnswers.length} / {allRespondentAnswers.length} 件
-                </span>
-              </div>
-
-              {/* カラムヘッダー（ソート） */}
-              <div className="shrink-0 grid grid-cols-[auto_1fr_1fr_auto] items-center gap-x-3 border-b border-[#2a2a2a] bg-[#252526] px-5 py-2">
-                <span className="w-32 text-[11px] font-medium text-[#8f8f8f]">
-                  <button type="button" onClick={() => toggleDetailSort('name')} className="flex items-center gap-1 hover:text-[#cccccc] transition-colors">
-                    回答者{sortIndicator('name')}
-                  </button>
-                </span>
-                <span className="text-[11px] font-medium text-[#8f8f8f]">
-                  <button type="button" onClick={() => toggleDetailSort('answer')} className="flex items-center gap-1 hover:text-[#cccccc] transition-colors">
-                    回答内容{sortIndicator('answer')}
-                  </button>
-                </span>
-                <span className="text-[11px] font-medium text-[#8f8f8f]">
-                  <button type="button" onClick={() => toggleDetailSort('age')} className="flex items-center gap-1 hover:text-[#cccccc] transition-colors">
-                    年齢{sortIndicator('age')}
-                  </button>
-                </span>
-                <span className="w-28 text-[11px] font-medium text-[#8f8f8f]">操作</span>
-              </div>
-
-              {/* 回答者リスト */}
-              <div className="min-h-0 overflow-y-auto">
-                <div className="divide-y divide-[#2a2a2a]">
-                  {visibleRespondentAnswers.length === 0 ? (
-                    <p className="px-5 py-8 text-center text-sm text-[#6b6b6b]">
-                      {allRespondentAnswers.length === 0
-                        ? 'セグメント対象者が0名です。設定でフィルターを見直してください。'
-                        : '条件に一致する回答者が見つかりません。'}
-                    </p>
-                  ) : (
-                    visibleRespondentAnswers.map(({ persona, answer }) => {
-                      const assigned = assignedPersonaIds.includes(persona.id);
-                      return (
-                        <div key={persona.id} className="grid grid-cols-[auto_1fr_1fr_auto] items-center gap-x-3 px-5 py-3 transition-colors hover:bg-[#252526]">
-                          <div className="flex w-32 items-center gap-2 min-w-0">
-                            <Avatar persona={persona} size="h-8 w-8 shrink-0" />
-                            <div className="min-w-0">
-                              <p className="truncate text-xs font-medium text-[#e4e4e4]">{persona.name}</p>
-                              <p className="truncate text-[10px] text-[#6b6b6b]">IT: {persona.itLiteracy} / {persona.gender}</p>
+                      if (message.senderType === 'user') {
+                        return (
+                          <div key={message.id} className="flex justify-end">
+                            <div className="max-w-[85%]">
+                              <div className="rounded-xl bg-primary px-3 py-2 text-sm text-primary-foreground">
+                                <p>{message.text}</p>
+                              </div>
+                              <p className="mt-1 text-right text-[10px] text-muted-foreground">{message.timestamp}</p>
                             </div>
                           </div>
-                          <div className="min-w-0 text-xs leading-relaxed text-[#cccccc]">{answer}</div>
-                          <div className="text-xs text-[#8f8f8f]">{persona.age}歳 / {persona.occupation}</div>
-                          <div className="w-28 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => togglePersonaAssignment(persona.id)}
-                              className={`w-full rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
-                                assigned
-                                  ? 'border border-[#3b4f48] bg-[#1f312c] text-[#8dd7be] hover:bg-[#27453d]'
-                                  : 'bg-[#047857] text-white hover:bg-[#065f46]'
-                              }`}
-                            >
-                              {assigned ? '追加済み ✓' : '+ 追加'}
-                            </button>
+                        );
+                      }
+
+                      const persona =
+                        (message.personaId ? dbPersonaById[message.personaId] : null) ||
+                        (message.personaId ? personaById[message.personaId] : null) ||
+                        currentChatPersona;
+                      return (
+                        <div key={message.id} className="flex items-start gap-2">
+                          {persona ? <Avatar persona={persona} size="h-7 w-7" /> : null}
+                          <div className="max-w-[88%]">
+                            <p className="mb-1 text-[11px] text-muted-foreground">
+                              {getPersonaChatLabel(persona)}
+                            </p>
+                            <div className="rounded-xl border border-border bg-muted px-3 py-2 text-sm text-foreground">
+                              <p>{message.text}</p>
+                            </div>
+                            <p className="mt-1 text-[10px] text-muted-foreground">{message.timestamp}</p>
                           </div>
                         </div>
                       );
-                    })
-                  )}
-                </div>
+                    })}
+                    <div ref={messageEndRef} />
+                  </>
+                )}
               </div>
 
-              {/* ページネーション */}
-              <div className="shrink-0 flex items-center justify-between border-t border-[#333333] px-5 py-2.5">
-                <p className="text-xs text-[#6b6b6b]">
-                  {filteredRespondentAnswers.length > 0
-                    ? `${((modalCurrentPage - 1) * MODAL_PAGE_SIZE + 1).toLocaleString()}–${Math.min(modalCurrentPage * MODAL_PAGE_SIZE, filteredRespondentAnswers.length).toLocaleString()} / ${filteredRespondentAnswers.length.toLocaleString()} 件`
-                    : '0 件'}
-                </p>
-                <div className="flex items-center gap-1">
+              <div className="border-t border-border px-4 py-3">
+                <div className="flex items-center gap-2 rounded-md border border-border bg-muted px-2 py-2">
+                  <textarea
+                    value={chatInput}
+                    onChange={(event) => setChatInput(event.target.value)}
+                    onCompositionStart={() => {
+                      isChatInputComposingRef.current = true;
+                    }}
+                    onCompositionEnd={() => {
+                      isChatInputComposingRef.current = false;
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && !event.shiftKey) {
+                        const nativeEvent = event.nativeEvent;
+                        const isComposing =
+                          nativeEvent.isComposing || nativeEvent.keyCode === 229 || isChatInputComposingRef.current;
+                        if (isComposing) return;
+                        event.preventDefault();
+                        handleSendChat();
+                      }
+                    }}
+                    rows={1}
+                    disabled={isChatDetailLoading}
+                    placeholder="例：最近おもしろかったネット記事やニュースは何？"
+                    className="min-w-0 flex-1 resize-none bg-transparent py-2 text-sm leading-5 text-foreground placeholder:text-muted-foreground focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                  />
                   <button
                     type="button"
-                    disabled={modalCurrentPage <= 1}
-                    onClick={() => setSurveyDetailPage((p) => Math.max(1, p - 1))}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded border border-[#333333] text-[#8f8f8f] transition-colors hover:bg-[#252526] disabled:cursor-not-allowed disabled:opacity-40"
+                    onClick={handleSendChat}
+                    disabled={!chatInput.trim() || isChatStreaming || isChatDetailLoading}
+                    aria-label="送信"
+                    className="inline-flex items-center justify-center self-center rounded-md bg-primary p-2 text-primary-foreground transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <ChevronLeft size={13} />
-                  </button>
-                  {Array.from({ length: Math.min(5, modalTotalPages) }, (_, i) => {
-                    const half = 2;
-                    let start = Math.max(1, Math.min(modalCurrentPage - half, modalTotalPages - 4));
-                    const page = start + i;
-                    if (page > modalTotalPages) return null;
-                    return (
-                      <button
-                        key={page}
-                        type="button"
-                        onClick={() => setSurveyDetailPage(page)}
-                        className={`inline-flex h-7 w-7 items-center justify-center rounded border text-xs transition-colors ${
-                          page === modalCurrentPage
-                            ? 'border-[#047857] bg-[#17362d] text-[#c8f5e7]'
-                            : 'border-[#333333] text-[#8f8f8f] hover:bg-[#252526]'
-                        }`}
-                      >
-                        {page}
-                      </button>
-                    );
-                  })}
-                  <button
-                    type="button"
-                    disabled={modalCurrentPage >= modalTotalPages}
-                    onClick={() => setSurveyDetailPage((p) => Math.min(modalTotalPages, p + 1))}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded border border-[#333333] text-[#8f8f8f] transition-colors hover:bg-[#252526] disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    <ChevronRight size={13} />
+                    <Send size={18} />
                   </button>
                 </div>
               </div>
             </div>
+
+            <aside className="order-1 min-h-0 xl:order-2">
+              <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto pr-1">
+              <div className="rounded-lg border border-border bg-card p-4">
+                <PersonaSwitcher
+                  personas={assignedPersonas}
+                  selectedId={activePersonaId}
+                  onChange={setActivePersonaId}
+                  inputId="persona-switcher-sidebar"
+                  disabled={isChatStreaming}
+                />
+              </div>
+
+              {currentChatPersona && (
+                <div className="rounded-lg border border-border bg-card p-4">
+                  <div className="flex items-start gap-3">
+                    <Avatar persona={currentChatPersona} size="h-10 w-10" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-foreground">{getPersonaChatLabel(currentChatPersona)}</p>
+                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                        {currentChatPersona.one_line_summary || currentChatPersona.occupation}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-4">
+                    {activePersonaInterests ? (
+                      <p className="mb-3 text-sm leading-relaxed text-foreground">{activePersonaInterests}</p>
+                    ) : null}
+                    <div className="mt-4">
+                      {activeAdvancedProfileLoading ? (
+                        <div className="flex min-h-[120px] items-center justify-center gap-2 rounded-md border border-border bg-muted p-3">
+                          <Loader2 size={14} className="animate-spin text-secondary-foreground" />
+                          <p className="text-xs text-muted-foreground">タクソノミーを読み込んでいます...</p>
+                        </div>
+                      ) : activeHasTaxonomyContent ? (
+                        <div className="space-y-4">
+                          {TAXONOMY_SECTIONS.map((section) => (
+                            (() => {
+                              const visibleSubcategories = section.subcategories
+                                .map((sub) => ({
+                                  ...sub,
+                                  items: sub.fields
+                                    .map((field) => ({
+                                      field,
+                                      value: getTaxonomyValue(activeAdvancedProfile, section.title, sub.title, field),
+                                    }))
+                                    .filter((item) => item.value),
+                                }))
+                                .filter((sub) => sub.items.length > 0);
+
+                              if (visibleSubcategories.length === 0) return null;
+
+                              return (
+                                <div key={section.title} className="rounded-md border border-border bg-muted p-3">
+                                  <p className="mb-2 text-[11px] font-medium text-secondary-foreground">{translateTaxonomyLabel(section.title)}</p>
+                                  <div className="space-y-3">
+                                    {visibleSubcategories.map((sub) => (
+                                      <div key={sub.title}>
+                                        <p className="mb-1 text-[10px] font-medium text-muted-foreground">{translateTaxonomyLabel(sub.title)}</p>
+                                        <div className="space-y-1 pl-2">
+                                          {sub.items.map((item) => (
+                                            <div key={item.field}>
+                                              <p className="text-[10px] text-muted-foreground">{translateTaxonomyLabel(item.field)}</p>
+                                              <p className="text-xs leading-relaxed text-foreground">{item.value}</p>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            })()
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="rounded-md border border-border bg-muted px-3 py-4 text-xs text-muted-foreground">
+                          タクソノミーデータがありません。
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="rounded-lg border border-border bg-card p-4">
+                <button
+                  type="button"
+                  onClick={() => setIsMobileChatLibraryOpen((prev) => !prev)}
+                  className="flex w-full items-center justify-between gap-3 text-left xl:hidden"
+                >
+                  <div>
+                    <p className="text-[11px] text-muted-foreground">
+                      {selectedChatSummary ? selectedChatSummary.title : '新規チャットを開始'}
+                    </p>
+                  </div>
+                  <ChevronRight
+                    size={16}
+                    className={`text-muted-foreground transition-transform ${isMobileChatLibraryOpen ? 'rotate-90' : ''}`}
+                  />
+                </button>
+
+                <div className={`${isMobileChatLibraryOpen ? 'mt-3 block' : 'hidden'} xl:mt-0 xl:block`}>
+                  <div className="flex items-center justify-between gap-3">
+                    {isChatSessionsLoading ? <Loader2 size={14} className="animate-spin text-muted-foreground" /> : null}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleStartNewChat}
+                    disabled={isChatStreaming}
+                    className={`mt-3 inline-flex w-full items-center justify-center gap-1 rounded-md border px-3 py-2 text-sm transition-colors ${
+                      selectedChatId === null
+                        ? 'border-border bg-secondary text-secondary-foreground'
+                        : 'border-border bg-muted text-foreground hover:border-ring'
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    <Plus size={14} />
+                    新規チャット
+                  </button>
+                  <div className="mt-3 space-y-2">
+                    {chatSessions.length === 0 && !isChatSessionsLoading ? (
+                      <div className="rounded-md border border-dashed border-border px-3 py-4 text-xs text-muted-foreground">
+                        保存済みチャットはまだありません。
+                      </div>
+                    ) : null}
+                    {chatSessions.map((chat) => {
+                      const persona = chat.persona || dbPersonaById[chat.personaId] || null;
+                      return (
+                        <button
+                          key={chat.id}
+                          type="button"
+                          onClick={() => handleOpenChatSession(chat.id)}
+                          disabled={isChatStreaming}
+                          className={`w-full rounded-lg border px-3 py-3 text-left transition-colors ${
+                            selectedChatId === chat.id
+                              ? 'border-border bg-secondary'
+                              : 'border-border bg-muted hover:border-ring'
+                          } disabled:cursor-not-allowed disabled:opacity-50`}
+                        >
+                          <div className="flex items-start gap-2">
+                            {persona ? <Avatar persona={persona} size="h-8 w-8" /> : null}
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-start justify-between gap-2">
+                                <p className="truncate text-sm font-medium text-foreground">{chat.title}</p>
+                                <span className="shrink-0 text-[10px] text-muted-foreground">
+                                  {formatChatSessionDateLabel(chat.lastMessageAt || chat.updatedAt)}
+                                </span>
+                              </div>
+                              {persona ? (
+                                <p className="mt-0.5 text-[11px] text-muted-foreground">{getPersonaChatLabel(persona)}</p>
+                              ) : null}
+                              <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+                                {chat.preview || '会話を続けるにはこのチャットを開いてください。'}
+                              </p>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+              </div>
+            </aside>
           </div>
+        </div>
+      </section>
+    );
+  };
+
+  const renderArticleFeedback = () => {
+    if (assignedPersonas.length === 0) {
+      return (
+        <EmptyState
+          title="ペルソナが未設定です"
+          description="記事フィードバックは、設定でプロジェクトに追加したペルソナを対象に実行します。"
+          onOpenSettings={() => setActiveSection('settings')}
+        />
+      );
+    }
+
+    if (articleFeedbackView === ARTICLE_FEEDBACK_VIEWS.CREATE) {
+      return (
+        <section className="h-full overflow-y-auto p-4 lg:p-5">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={openArticleList}
+                className={BUTTON_TERTIARY_CLASS}
+              >
+                <ChevronLeft size={14} />
+                一覧に戻る
+              </button>
+              <p className="text-xs text-muted-foreground">対象ペルソナ: 設定で選択した {assignedPersonas.length}名</p>
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-5">
+              <h2 className="text-base font-semibold text-foreground">記事入力</h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                設定で選択したペルソナ全員を対象にフィードバックを取得します。
+              </p>
+
+              <div className="mt-5 space-y-4">
+                <div className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground">
+                  対象: {assignedPersonas.length}名
+                </div>
+
+                <fieldset>
+                  <legend className="mb-2 block text-xs text-muted-foreground">入力方式</legend>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <label className="flex cursor-pointer items-center gap-2 rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground">
+                      <input
+                        type="radio"
+                        name="article-input-mode"
+                        checked={articleInputMode === ARTICLE_INPUT_MODES.URL}
+                        onChange={() => {
+                          setArticleInputMode(ARTICLE_INPUT_MODES.URL);
+                          setArticleFormError('');
+                        }}
+                        className="h-4 w-4 accent-primary"
+                      />
+                      URL
+                    </label>
+                    <label className="flex cursor-pointer items-center gap-2 rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground">
+                      <input
+                        type="radio"
+                        name="article-input-mode"
+                        checked={articleInputMode === ARTICLE_INPUT_MODES.CONTENT}
+                        onChange={() => {
+                          setArticleInputMode(ARTICLE_INPUT_MODES.CONTENT);
+                          setArticleFormError('');
+                        }}
+                        className="h-4 w-4 accent-primary"
+                      />
+                      タイトル+本文
+                    </label>
+                  </div>
+                </fieldset>
+
+                {articleInputMode === ARTICLE_INPUT_MODES.URL ? (
+                  <div>
+                    <label htmlFor="article-url" className="mb-1 block text-xs text-muted-foreground">
+                      記事URL（これだけで実行できます）
+                    </label>
+                    <input
+                      id="article-url"
+                      type="url"
+                      value={articleForm.url}
+                      onChange={(event) =>
+                        setArticleForm((prev) => ({ ...prev, url: event.target.value }))
+                      }
+                      placeholder="https://example.com/article"
+                      className="w-full rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none"
+                    />
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <label htmlFor="article-title" className="mb-1 block text-xs text-muted-foreground">
+                        タイトル
+                      </label>
+                      <input
+                        id="article-title"
+                        type="text"
+                        value={articleForm.title}
+                        onChange={(event) =>
+                          setArticleForm((prev) => ({ ...prev, title: event.target.value }))
+                        }
+                        placeholder="例: オンボーディング改善で離脱率を下げる方法"
+                        className="w-full rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label htmlFor="article-body" className="mb-1 block text-xs text-muted-foreground">
+                        本文
+                      </label>
+                      <textarea
+                        id="article-body"
+                        value={articleForm.body}
+                        onChange={(event) =>
+                          setArticleForm((prev) => ({ ...prev, body: event.target.value }))
+                        }
+                        rows={9}
+                        placeholder="本文を貼り付けてください"
+                        className="w-full resize-y rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none"
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {articleFormError && (
+                <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                  {articleFormError}
+                </p>
+              )}
+
+              <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={openArticleList}
+                  className={BUTTON_SECONDARY_CLASS}
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCreateAndRunFeedback}
+                  className={BUTTON_PRIMARY_CLASS}
+                >
+                  <Sparkles size={14} />
+                  フィードバック実行
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      );
+    }
+
+    if (articleFeedbackView === ARTICLE_FEEDBACK_VIEWS.RESULTS) {
+      if (!selectedArticle) {
+        return (
+          <section className="h-full overflow-y-auto p-4 lg:p-5">
+            <div className="flex h-full items-center justify-center rounded-xl border border-border bg-card p-8 text-center">
+              <div>
+                <p className="text-sm text-muted-foreground">表示できる記事がありません。</p>
+                <button
+                  type="button"
+                  onClick={openArticleList}
+                  className={`mt-3 ${BUTTON_SECONDARY_CLASS}`}
+                >
+                  一覧に戻る
+                </button>
+              </div>
+            </div>
+          </section>
         );
-      })()}
-    </>
+      }
+
+      const statusMeta = getArticleRunStatusMeta(selectedArticle.status);
+      return (
+        <section className="h-full overflow-y-auto p-4 lg:p-5">
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={openArticleList}
+                className={BUTTON_TERTIARY_CLASS}
+              >
+                <ChevronLeft size={14} />
+                記事一覧へ
+              </button>
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-base font-semibold text-foreground">{getArticleDisplayTitle(selectedArticle)}</h2>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {selectedArticle.url || '本文入力で作成'}
+                  </p>
+                </div>
+                <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${statusMeta.badgeClass}`}>
+                  {statusMeta.label}
+                </span>
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-muted-foreground md:grid-cols-5">
+                <div>
+                  <p>実行時刻</p>
+                  <p className="mt-1 text-sm text-foreground">{formatDateTime(selectedArticle.createdAt)}</p>
+                </div>
+                <div>
+                  <p>入力方式</p>
+                  <p className="mt-1 text-sm text-foreground">{getArticleInputModeLabel(selectedArticle.inputMode)}</p>
+                </div>
+                <div>
+                  <p>対象ペルソナ</p>
+                  <p className="mt-1 text-sm text-foreground">{getArticleTargetLabel(selectedArticle)}</p>
+                </div>
+                <div>
+                  <p>完了件数</p>
+                  <p className="mt-1 text-sm text-foreground">
+                    {selectedArticle.completedCount}/{selectedArticle.personaCount}
+                  </p>
+                </div>
+                <div>
+                  <p>平均スコア</p>
+                  <p className="mt-1 text-sm text-foreground">
+                    {selectedArticle.averageScore ?? '-'}
+                  </p>
+                </div>
+              </div>
+
+              {selectedArticle.status === 'running' && (
+                <div className="mt-4">
+                  <div className="relative h-2 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="absolute h-full bg-primary transition-all duration-500"
+                      style={{
+                        width: selectedArticle.personaCount > 0
+                          ? `${(selectedArticle.completedCount / selectedArticle.personaCount) * 100}%`
+                          : '0%',
+                      }}
+                    />
+                  </div>
+                  <div className="mt-2 flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground">
+                      {selectedArticle.completedCount}/{selectedArticle.personaCount} ペルソナ解析完了
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => handleCancelArticle(selectedArticle.id)}
+                      className="text-xs text-muted-foreground underline hover:text-foreground"
+                    >
+                      キャンセル
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-4">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-foreground">フィードバック結果一覧</h3>
+                <p className="text-xs text-muted-foreground">{sortedSelectedFeedbacks.length}件</p>
+              </div>
+
+              {sortedSelectedFeedbacks.length === 0 ? (
+                <div className="flex min-h-[140px] items-center justify-center gap-2 rounded-md border border-border bg-muted p-3">
+                  {selectedArticle.status === 'failed' ? (
+                    <p className="text-xs text-red-500">シミュレーションに失敗しました。再度お試しください。</p>
+                  ) : selectedArticle.status === 'cancelled' ? (
+                    <p className="text-xs text-muted-foreground">キャンセルされました。</p>
+                  ) : (
+                    <>
+                      <Loader2 size={14} className="animate-spin text-secondary-foreground" />
+                      <p className="text-xs text-muted-foreground">選択済みペルソナのフィードバックを生成中です...</p>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {sortedSelectedFeedbacks.map((feedback) => {
+                    const persona =
+                      feedback.persona ||
+                      dbPersonaById[feedback.personaId] ||
+                      personaById[feedback.personaId];
+                    return (
+                      <button
+                        key={feedback.id}
+                        type="button"
+                        onClick={() => openArticleDetail(selectedArticle.id, feedback.id)}
+                        className="w-full rounded-md border border-border bg-muted px-3 py-3 text-left transition-colors hover:bg-accent"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-2">
+                            {persona ? <Avatar persona={persona} size="h-8 w-8" /> : null}
+                            <div>
+                              <p className="text-sm font-medium text-foreground">
+                                {persona
+                                  ? `${persona.name}（${[persona.age ? `${persona.age}歳` : null, persona.gender].filter(Boolean).join('・')}）`
+                                  : '不明なペルソナ'}
+                              </p>
+                              <p className="mt-1 text-xs text-muted-foreground">{feedback.summary}</p>
+                            </div>
+                          </div>
+                          <p className="shrink-0 text-sm font-semibold text-foreground">{feedback.score}点</p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+      );
+    }
+
+    if (articleFeedbackView === ARTICLE_FEEDBACK_VIEWS.DETAIL) {
+      if (!selectedArticle || !selectedFeedback) {
+        return (
+          <section className="h-full overflow-y-auto p-4 lg:p-5">
+            <div className="flex h-full items-center justify-center rounded-xl border border-border bg-card p-8 text-center">
+              <div>
+                <p className="text-sm text-muted-foreground">表示できる詳細がありません。</p>
+                <button
+                  type="button"
+                  onClick={openArticleList}
+                  className={`mt-3 ${BUTTON_SECONDARY_CLASS}`}
+                >
+                  一覧に戻る
+                </button>
+              </div>
+            </div>
+          </section>
+        );
+      }
+
+      return (
+        <section className="h-full overflow-y-auto p-4 lg:p-5">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => openArticleResults(selectedArticle.id)}
+                className={BUTTON_TERTIARY_CLASS}
+              >
+                <ChevronLeft size={14} />
+                結果一覧に戻る
+              </button>
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-4">
+              <p className="text-xs text-muted-foreground">対象記事</p>
+              <h2 className="mt-1 text-base font-semibold text-foreground">{getArticleDisplayTitle(selectedArticle)}</h2>
+              <p className="mt-1 text-xs text-muted-foreground">{selectedArticle.url || '本文入力で作成'}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                入力方式: {getArticleInputModeLabel(selectedArticle.inputMode)}
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2">
+                  {selectedFeedbackPersona ? <Avatar persona={selectedFeedbackPersona} size="h-10 w-10" /> : null}
+                  <div>
+                    <p className="text-sm font-semibold text-foreground">
+                      {selectedFeedbackPersona
+                        ? `${selectedFeedbackPersona.name}（${[selectedFeedbackPersona.age ? `${selectedFeedbackPersona.age}歳` : null, selectedFeedbackPersona.gender].filter(Boolean).join('・')}）`
+                        : '不明なペルソナ'}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {selectedFeedbackPersona
+                        ? selectedFeedbackPersona.occupation
+                        : ''}
+                    </p>
+                  </div>
+                </div>
+                <p className="shrink-0 text-xl font-semibold text-foreground">{selectedFeedback.score}点</p>
+              </div>
+              <p className="mt-3 rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground">
+                {selectedFeedback.summary}
+              </p>
+            </div>
+
+            {selectedFeedback.honestReaction && (
+              <div className="rounded-xl border border-border bg-card p-4">
+                <h3 className="text-sm font-semibold text-foreground">率直な感想</h3>
+                <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-foreground">
+                  {selectedFeedback.honestReaction}
+                </p>
+              </div>
+            )}
+
+            {selectedFeedback.titleFeedback.length > 0 && (
+              <div className="rounded-xl border border-border bg-card p-4">
+                <h3 className="text-sm font-semibold text-foreground">タイトルへの指摘</h3>
+                <ul className="mt-2 space-y-2 text-xs leading-relaxed text-foreground">
+                  {selectedFeedback.titleFeedback.map((item) => (
+                    <li key={`title-${item}`}>- {item}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="rounded-xl border border-border bg-card p-4">
+                <h3 className="text-sm font-semibold text-foreground">良かった点</h3>
+                <ul className="mt-2 space-y-2 text-xs leading-relaxed text-foreground">
+                  {selectedFeedback.positives.map((item) => (
+                    <li key={`good-${item}`}>- {item}</li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="rounded-xl border border-border bg-card p-4">
+                <h3 className="text-sm font-semibold text-foreground">メディアとの相性</h3>
+                <ul className="mt-2 space-y-2 text-xs leading-relaxed text-foreground">
+                  {selectedFeedback.mediaFit.map((item) => (
+                    <li key={`media-${item}`}>- {item}</li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="rounded-xl border border-border bg-card p-4">
+                <h3 className="text-sm font-semibold text-foreground">こう変えると刺さる</h3>
+                <ul className="mt-2 space-y-2 text-xs leading-relaxed text-foreground">
+                  {selectedFeedback.actionItems.map((item) => (
+                    <li key={`action-${item}`}>- {item}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+        </section>
+      );
+    }
+
+    return (
+      <section className="h-full overflow-y-auto p-4 lg:p-5">
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-lg font-semibold text-foreground">フィードバック</h2>
+              <p className="text-xs text-muted-foreground">
+                新規作成から記事を入力し、設定で選択したペルソナ全員のフィードバックを実行します。
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={openArticleCreate}
+              className={BUTTON_PRIMARY_CLASS}
+            >
+              <Plus size={14} />
+              新規作成
+            </button>
+          </div>
+
+          <div>
+            <label htmlFor="article-search" className="mb-1 block text-xs text-muted-foreground">
+              記事検索
+            </label>
+            <div className="relative">
+              <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <input
+                id="article-search"
+                value={articleSearchQuery}
+                onChange={(event) => setArticleSearchQuery(event.target.value)}
+                placeholder="タイトルまたはURLで検索"
+                className="w-full rounded-md border border-border bg-muted py-2 pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none"
+              />
+            </div>
+          </div>
+
+          {visibleArticleRuns.length === 0 ? (
+            <div className="flex min-h-[320px] items-center justify-center rounded-xl border border-border bg-card p-8 text-center">
+              <div>
+                <FileText size={38} className="mx-auto text-primary" />
+                <h3 className="mt-3 text-base font-semibold text-foreground">フィードバックがまだありません</h3>
+                <p className="mt-1 text-sm text-muted-foreground">「新規作成」から最初のフィードバックを実行してください。</p>
+                <button
+                  type="button"
+                  onClick={openArticleCreate}
+                  className={`mt-4 ${BUTTON_PRIMARY_CLASS}`}
+                >
+                  <Plus size={14} />
+                  新規作成
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-xl border border-border bg-card">
+              <div className="overflow-x-auto">
+                <table className="w-full table-fixed text-sm">
+                  <thead className="bg-muted">
+                    <tr className="text-left text-xs text-muted-foreground">
+                      <th className="w-[42%] max-w-0 px-3 py-2 font-medium">タイトル</th>
+                      <th className="whitespace-nowrap px-3 py-2 font-medium">方式</th>
+                      <th className="whitespace-nowrap px-3 py-2 font-medium">対象</th>
+                      <th className="whitespace-nowrap px-3 py-2 font-medium">平均点</th>
+                      <th className="whitespace-nowrap px-3 py-2 font-medium">実施日時</th>
+                      <th className="whitespace-nowrap px-3 py-2 font-medium">ステータス</th>
+                      <th className="whitespace-nowrap px-3 py-2 text-right font-medium">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {paginatedArticleRuns.map((article) => {
+                      const isCompleted = article.status === 'completed';
+                      const isFailed = article.status === 'failed';
+                      const isCancelled = article.status === 'cancelled';
+                      const statusLabel = isCompleted
+                        ? '完了'
+                        : isFailed
+                          ? '失敗'
+                          : isCancelled
+                            ? 'キャンセル'
+                            : `${article.completedCount}/${article.personaCount}`;
+                      const statusClass = isCompleted
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : isFailed
+                          ? 'bg-red-100 text-red-700'
+                          : isCancelled
+                            ? 'bg-gray-100 text-gray-600'
+                            : 'bg-blue-100 text-blue-700';
+                      return (
+                        <tr
+                          key={article.id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => openArticleResults(article.id)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              openArticleResults(article.id);
+                            }
+                          }}
+                          className="cursor-pointer align-top transition-colors hover:bg-accent/60"
+                        >
+                          <td className="max-w-0 w-[42%] px-3 py-3">
+                            <p className="truncate text-sm font-semibold text-foreground">{getArticleDisplayTitle(article)}</p>
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-3 text-xs text-foreground">{getArticleInputModeLabel(article.inputMode)}</td>
+                          <td className="whitespace-nowrap px-3 py-3 text-xs text-foreground">{getArticleTargetLabel(article)}</td>
+                          <td className="whitespace-nowrap px-3 py-3 text-xs text-foreground">{article.averageScore ?? '-'}</td>
+                          <td className="whitespace-nowrap px-3 py-3 text-xs text-foreground">{formatDateTime(article.createdAt)}</td>
+                          <td className="whitespace-nowrap px-3 py-3">
+                            <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${statusClass}`}>
+                              {statusLabel}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            <button
+                              type="button"
+                              aria-label="記事を削除"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                handleDeleteArticle(article.id);
+                              }}
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-muted text-foreground transition-colors hover:bg-accent"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-4 border-t border-border px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <label htmlFor="article-page-size" className="text-xs text-muted-foreground">
+                    一度に表示
+                  </label>
+                  <SelectField
+                    id="article-page-size"
+                    value={articleTablePageSize}
+                    onChange={(event) => setArticleTablePageSize(Number(event.target.value))}
+                    containerClassName="w-20"
+                    className="py-1.5 pr-8 text-xs"
+                  >
+                    {ARTICLE_TABLE_PAGE_SIZE_OPTIONS.map((size) => (
+                      <option key={`page-size-${size}`} value={size}>
+                        {size}
+                      </option>
+                    ))}
+                  </SelectField>
+                  <p className="text-xs text-muted-foreground">
+                    {articleTableRangeStart}-{articleTableRangeEnd} / {visibleArticleRuns.length}
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    aria-label="最初のページ"
+                    onClick={() => setArticleTablePage(1)}
+                    disabled={articleTablePage === 1}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-muted text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <ChevronsLeft size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="前のページ"
+                    onClick={() => setArticleTablePage((prev) => Math.max(1, prev - 1))}
+                    disabled={articleTablePage === 1}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-muted text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <ChevronLeft size={14} />
+                  </button>
+                  <span className="px-2 text-xs text-muted-foreground">
+                    {articleTablePage} / {articleTableTotalPages}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="次のページ"
+                    onClick={() => setArticleTablePage((prev) => Math.min(articleTableTotalPages, prev + 1))}
+                    disabled={articleTablePage === articleTableTotalPages}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-muted text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <ChevronRight size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="最後のページ"
+                    onClick={() => setArticleTablePage(articleTableTotalPages)}
+                    disabled={articleTablePage === articleTableTotalPages}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-muted text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <ChevronsRight size={14} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
     );
   };
 
   const renderMainSection = () => {
+    if (activeSection === 'articleFeedback') return renderArticleFeedback();
     if (activeSection === 'settings') return renderSettings();
-    if (activeSection === 'survey') return renderSurvey();
-    if (activeSection === 'persona') return renderPersona();
-    if (activeSection === 'journey') return renderJourney();
-    if (activeSection === 'mentalModel') return renderMentalModel();
-    if (activeSection === 'storyboard') return renderStoryboard();
-    return renderUsability();
+    return renderPersona();
   };
 
   return (
-    <div className="h-screen w-full overflow-hidden bg-[#181818] text-[#cccccc]">
+    <div className="h-screen w-full overflow-hidden bg-background text-foreground">
       <div className="flex h-full flex-col md:flex-row">
-        <aside className="w-full shrink-0 border-b border-[#333333] bg-[#1e1e1e] md:w-64 md:border-b-0 md:border-r">
-          <div className="border-b border-[#333333] px-3 py-3">
-            <button
-              type="button"
-              onClick={handleBack}
-              className="flex w-full items-center gap-2 rounded-md border border-[#333333] px-3 py-2 text-sm text-[#d0d0d0] transition-colors hover:bg-[#252526]"
-            >
-              <ArrowLeft size={15} />
-              戻る
-            </button>
-          </div>
-
-          <nav className="grid grid-cols-2 gap-2 p-3 md:grid-cols-1">
+        <aside className="flex h-full w-full shrink-0 flex-col border-b border-border bg-card md:w-64 md:border-b-0 md:border-r">
+          <nav className="flex-1 grid grid-cols-2 gap-2 p-3 md:grid-cols-1 md:content-start">
             {NAV_ITEMS.map((item) => {
               const Icon = item.icon;
               const active = activeSection === item.id;
@@ -3177,8 +3060,8 @@ export default function PluginConnectPage({ onBack }) {
                   onClick={() => setActiveSection(item.id)}
                   className={`flex items-center gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors ${
                     active
-                      ? 'border-[#2f5f51] bg-[#17362d] text-[#c8f5e7]'
-                      : 'border-transparent text-[#a3a3a3] hover:border-[#333333] hover:bg-[#252526] hover:text-[#d2d2d2]'
+                      ? 'border-border bg-secondary text-secondary-foreground'
+                      : 'border-transparent text-muted-foreground hover:border-border hover:bg-accent hover:text-foreground'
                   }`}
                 >
                   <Icon size={15} />
@@ -3188,13 +3071,23 @@ export default function PluginConnectPage({ onBack }) {
             })}
           </nav>
 
-          <div className="border-t border-[#333333] px-3 py-3 text-xs text-[#8f8f8f]">
+          <div className="border-t border-border px-3 py-3 text-xs text-muted-foreground">
             <p>選択中ペルソナ: {assignedPersonas.length}名</p>
             <p className="mt-1">現在セクション: {NAV_ITEMS.find((item) => item.id === activeSection)?.label}</p>
+            {onLogout && (
+              <button
+                type="button"
+                onClick={onLogout}
+                className="mt-2.5 flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <LogOut size={13} />
+                ログアウト
+              </button>
+            )}
           </div>
         </aside>
 
-        <main className="min-h-0 flex-1 bg-[#181818]">{renderMainSection()}</main>
+        <main className="min-h-0 flex-1 bg-background">{renderMainSection()}</main>
       </div>
 
       {previewPersona && (
@@ -3203,19 +3096,19 @@ export default function PluginConnectPage({ onBack }) {
           onClick={() => setPreviewPersonaId(null)}
         >
           <div
-            className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-[#333333] bg-[#1f1f1f]"
+            className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-card"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="shrink-0 flex items-start justify-between gap-3 border-b border-[#333333] bg-[#1f1f1f] px-5 py-4">
+            <div className="shrink-0 flex items-start justify-between gap-3 border-b border-border bg-card px-5 py-4">
               <div className="flex items-start gap-3">
                 <Avatar persona={previewPersona} size="h-12 w-12" />
                 <div>
-                  <h2 className="text-lg font-semibold text-[#e5e5e5]">{previewPersona.name}</h2>
-                  <p className="text-sm text-[#8f8f8f]">
-                    {previewPersona.age}歳 / {previewPersona.occupation}
-                  </p>
-                  <p className="text-xs text-[#8f8f8f]">
-                    {previewPersona.country} / {previewPersona.gender} / IT: {previewPersona.itLiteracy}
+                  <h2 className="text-lg font-semibold text-foreground">
+                    {previewPersona.name || previewPersona.display_name}
+                    <span className="ml-1 font-normal text-muted-foreground text-sm">({previewPersona.age}歳・{previewPersona.gender})</span>
+                  </h2>
+                  <p className="text-sm text-muted-foreground">
+                    {previewPersona.one_line_summary || previewPersona.occupation}
                   </p>
                 </div>
               </div>
@@ -3223,79 +3116,556 @@ export default function PluginConnectPage({ onBack }) {
                 type="button"
                 onClick={() => setPreviewPersonaId(null)}
                 aria-label="閉じる"
-                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[#333333] text-[#bdbdbd] transition-colors hover:bg-[#252526] hover:text-[#e0e0e0]"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-border text-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
                 <X size={16} />
               </button>
             </div>
 
             <div className="persona-popup-scrollbar min-h-0 space-y-4 overflow-y-auto px-5 pb-5 pt-4">
-              <div className="rounded-lg border border-[#333333] bg-[#1a1a1a] p-4">
-                <p className="mb-2 text-xs text-[#a5a5a5]">価値観</p>
-                <p className="mb-3 text-sm leading-relaxed text-[#d0d0d0]">{previewPersona.value}</p>
-                <p className="mb-2 text-xs text-[#a5a5a5]">重視ポイント</p>
-                <div className="flex flex-wrap gap-2">
-                  {previewPersona.personality.map((trait) => (
-                    <span
-                      key={trait}
-                      className="rounded-full border border-[#2f5f51] bg-[#17362d] px-2 py-1 text-[11px] text-[#92d8bf]"
-                    >
-                      {trait}
-                    </span>
-                  ))}
+              <div className="rounded-lg border border-border bg-muted p-4">
+                <p className="mb-2 text-xs text-muted-foreground">ナラティブ</p>
+                <p className="text-sm leading-relaxed text-foreground">{previewPersona.narrative}</p>
+              </div>
+
+              {previewPersonaInterests ? (
+                <div className="rounded-lg border border-border bg-muted p-4">
+                  <p className="text-sm leading-relaxed text-foreground">{previewPersonaInterests}</p>
                 </div>
-              </div>
+              ) : null}
 
-              <div className="rounded-lg border border-[#333333] bg-[#1a1a1a] p-4">
-                <p className="mb-2 text-xs text-[#a5a5a5]">関心事</p>
-                <p className="mb-3 text-sm leading-relaxed text-[#d0d0d0]">{previewPersona.interest}</p>
-                <p className="mb-2 text-xs text-[#a5a5a5]">困っていること</p>
-                <p className="text-sm leading-relaxed text-[#d0d0d0]">{previewPersona.painPoint}</p>
-              </div>
-
-              <div className="rounded-lg border border-[#333333] bg-[#1a1a1a] p-4">
+              <div className="rounded-lg border border-border bg-muted p-4">
                 {previewAdvancedProfileLoading ? (
-                  <div className="flex min-h-[120px] items-center justify-center gap-2 rounded-md border border-[#2b2b2b] bg-[#171717] p-3">
-                    <Loader2 size={14} className="animate-spin text-[#8fceb8]" />
-                    <p className="text-xs text-[#8f8f8f]">
-                      心理・行動特性を生成しています...
-                    </p>
+                  <div className="flex min-h-[120px] items-center justify-center gap-2 rounded-md border border-border bg-muted p-3">
+                    <Loader2 size={14} className="animate-spin text-secondary-foreground" />
+                    <p className="text-xs text-muted-foreground">タクソノミーを読み込んでいます...</p>
                   </div>
-                ) : previewAdvancedProfile ? (
+                ) : previewHasTaxonomyContent ? (
                   <div className="space-y-4">
-                    {ADVANCED_PERSONA_SECTIONS.map((section) => (
-                      <div key={section.title} className="rounded-md border border-[#2b2b2b] bg-[#171717] p-3">
-                        <p className="mb-2 text-[11px] font-medium text-[#8fceb8]">{section.title}</p>
-                        <div className="space-y-2">
-                          {section.fields.map((field) => (
-                            <div key={field.key}>
-                              <p className="text-[10px] text-[#8f8f8f]">{field.label}</p>
-                              <p className="text-xs leading-relaxed text-[#d0d0d0]">
-                                {previewAdvancedProfile[field.key] || '未設定'}
-                              </p>
+                    {TAXONOMY_SECTIONS.map((section) => (
+                      (() => {
+                        const visibleSubcategories = section.subcategories
+                          .map((sub) => ({
+                            ...sub,
+                            items: sub.fields
+                              .map((field) => ({
+                                field,
+                                value: getTaxonomyValue(previewAdvancedProfile, section.title, sub.title, field),
+                              }))
+                              .filter((item) => item.value),
+                          }))
+                          .filter((sub) => sub.items.length > 0);
+
+                        if (visibleSubcategories.length === 0) return null;
+
+                        return (
+                          <div key={section.title} className="rounded-md border border-border bg-muted p-3">
+                            <p className="mb-2 text-[11px] font-medium text-secondary-foreground">{translateTaxonomyLabel(section.title)}</p>
+                            <div className="space-y-3">
+                              {visibleSubcategories.map((sub) => (
+                                <div key={sub.title}>
+                                  <p className="mb-1 text-[10px] font-medium text-muted-foreground">{translateTaxonomyLabel(sub.title)}</p>
+                                  <div className="space-y-1 pl-2">
+                                    {sub.items.map((item) => (
+                                      <div key={item.field}>
+                                        <p className="text-[10px] text-muted-foreground">{translateTaxonomyLabel(item.field)}</p>
+                                        <p className="text-xs leading-relaxed text-foreground">{item.value}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
                             </div>
-                          ))}
-                        </div>
-                      </div>
+                          </div>
+                        );
+                      })()
                     ))}
                   </div>
                 ) : (
-                  <div className="rounded-md border border-[#2b2b2b] bg-[#171717] px-3 py-4 text-xs text-[#8f8f8f]">
-                    このペルソナの心理・行動特性はまだ生成されていません。
+                  <div className="rounded-md border border-border bg-muted px-3 py-4 text-xs text-muted-foreground">
+                    タクソノミーデータがありません。
                   </div>
                 )}
               </div>
 
-              <div className="rounded-lg border border-[#333333] bg-[#1a1a1a] p-4">
-                <p className="mb-2 text-xs text-[#a5a5a5]">想定発話</p>
-                <ul className="space-y-2 text-sm leading-relaxed text-[#d0d0d0]">
-                  {previewPersona.mockReplies.map((reply) => (
-                    <li key={reply}>- {reply}</li>
-                  ))}
-                </ul>
-              </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {showPersonaGenerateModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          onClick={() => { if (!genRunning) handleClosePersonaGenerate(); }}
+        >
+          <div
+            className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-card"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="shrink-0 flex items-center justify-between border-b border-border px-5 py-4">
+              <div>
+                <h2 className="text-base font-semibold text-foreground">
+                  {isOnboarding ? 'メディアルへようこそ！' : 'ペルソナ新規作成'}
+                </h2>
+                {!isOnboarding && (
+                  <p className="text-xs text-muted-foreground mt-0.5">DeepPersona手法で仮想読者を生成します</p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={handleClosePersonaGenerate}
+                disabled={genRunning}
+                aria-label="閉じる"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-border text-foreground transition-colors hover:bg-accent disabled:opacity-40"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="min-h-0 overflow-y-auto px-5 pb-5 pt-4 space-y-4">
+              {/* Onboarding explanation */}
+              {isOnboarding && (
+                <div className="rounded-lg border border-border bg-secondary p-4 text-sm leading-relaxed text-secondary-foreground space-y-2">
+                  <p>まずは、あなたの記事を読む「仮想読者」を作りましょう。</p>
+                  <p>ペルソナ（仮想読者）は、記事を公開する前に「この記事がどんな人にどう響くか」をシミュレーションするために使います。</p>
+                  <p>属性を設定するほどターゲットに近い読者が生成されます。何も設定しなければ、多様な読者がランダムに生成されます。</p>
+                  <p className="font-medium text-foreground">まずは5人ほど生成してみましょう！</p>
+                </div>
+              )}
+
+              {/* Form — hidden while running or results shown */}
+              {!genRunning && genResults.length === 0 && (
+                <>
+                  {/* 生成人数 */}
+                  <div className="flex items-center gap-3">
+                    <label className="shrink-0 text-xs text-muted-foreground">生成人数（1〜50）</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={genForm.count}
+                      onChange={(e) => setGenForm((p) => ({ ...p, count: Math.max(1, Math.min(50, Number(e.target.value))) }))}
+                      className={`${TEXT_INPUT_CLASS} w-16`}
+                    />
+                  </div>
+
+                  {/* Tab selector */}
+                  <div className="flex rounded-lg border border-border bg-muted p-1 gap-1">
+                    <button
+                      type="button"
+                      onClick={() => { setGenTab('easy'); setGenFormError(''); }}
+                      className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                        genTab === 'easy'
+                          ? 'bg-card text-foreground shadow-sm border border-border'
+                          : 'text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      かんたん設定
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setGenTab('segment'); setGenFormError(''); }}
+                      className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                        genTab === 'segment'
+                          ? 'bg-card text-foreground shadow-sm border border-border'
+                          : 'text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      セグメント選択
+                    </button>
+                  </div>
+
+                  {/* Tab content */}
+                  {genTab === 'easy' ? (
+                    <div>
+                      <label className="mb-1 block text-xs text-muted-foreground">
+                        記事タイトル・本文またはメディア概要
+                      </label>
+                      <textarea
+                        value={genEasyText}
+                        onChange={(e) => setGenEasyText(e.target.value)}
+                        placeholder={"例）\n記事タイトル：「30代会社員が副業で月5万円を稼ぐ方法」\n\n本文：副業解禁の流れが加速する中、時間の制約がある会社員でも取り組みやすい副業の選び方と、実際に収益を上げるためのステップを解説します。…"}
+                        rows={8}
+                        className={`${TEXT_INPUT_CLASS} resize-none leading-relaxed`}
+                      />
+                      <p className="mt-1.5 text-xs text-muted-foreground">
+                        入力されたテキストをAIが解析し、想定読者のセグメントを自動で判断してペルソナを生成します。
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="mb-1 block text-xs text-muted-foreground">年齢（任意）</label>
+                          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                            <input
+                              type="number"
+                              min={15}
+                              max={80}
+                              value={genForm.age_min}
+                              onChange={(e) => setGenForm((p) => ({ ...p, age_min: e.target.value }))}
+                              placeholder="最小"
+                              className={TEXT_INPUT_CLASS}
+                            />
+                            <span className="text-xs text-muted-foreground">〜</span>
+                            <input
+                              type="number"
+                              min={15}
+                              max={80}
+                              value={genForm.age_max}
+                              onChange={(e) => setGenForm((p) => ({ ...p, age_max: e.target.value }))}
+                              placeholder="最大"
+                              className={TEXT_INPUT_CLASS}
+                            />
+                          </div>
+                        </div>
+                        <div className="w-fit">
+                          <label className="mb-1 block text-xs text-muted-foreground">性別（任意）</label>
+                          <SelectField
+                            value={genForm.gender}
+                            onChange={(e) => setGenForm((p) => ({ ...p, gender: e.target.value }))}
+                            containerClassName="w-28"
+                          >
+                            <option value="">未選択</option>
+                            <option value="男性">男性</option>
+                            <option value="女性">女性</option>
+                            <option value="その他">その他</option>
+                          </SelectField>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs text-muted-foreground">居住地域（任意）</label>
+                          <SelectField
+                            value={genForm.region_type}
+                            onChange={(e) => setGenForm((p) => ({ ...p, region_type: e.target.value }))}
+                          >
+                            <option value="">未選択</option>
+                            <option value="metro">大都市圏</option>
+                            <option value="regional">地方都市</option>
+                            <option value="rural">郊外・地方</option>
+                          </SelectField>
+                        </div>
+                        <div className="col-span-2">
+                          <label className="mb-1 block text-xs text-muted-foreground">都道府県（複数選択可）</label>
+                          <div className="rounded-md border border-border bg-muted p-3">
+                            <div className="mb-3 flex flex-wrap gap-2">
+                              {genForm.prefectures.length > 0 ? genForm.prefectures.map((prefecture) => (
+                                <button
+                                  key={prefecture}
+                                  type="button"
+                                  onClick={() => toggleGenPrefecture(prefecture)}
+                                  className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2 py-1 text-xs text-foreground"
+                                >
+                                  {prefecture}
+                                  <X size={12} />
+                                </button>
+                              )) : (
+                                <p className="text-xs text-muted-foreground">未選択。下の一覧から複数選べます。</p>
+                              )}
+                            </div>
+                            <div className="grid max-h-40 grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-3">
+                              {PREFECTURE_OPTIONS.map((prefecture) => {
+                                const checked = genForm.prefectures.includes(prefecture);
+                                return (
+                                  <label
+                                    key={prefecture}
+                                    className={`flex cursor-pointer items-center gap-2 rounded-md border px-2 py-1.5 text-xs ${
+                                      checked
+                                        ? 'border-primary bg-card text-foreground'
+                                        : 'border-border bg-card text-muted-foreground'
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() => toggleGenPrefecture(prefecture)}
+                                      className="h-3.5 w-3.5 accent-primary"
+                                    />
+                                    <span>{prefecture}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="col-span-2">
+                          <label className="mb-1 block text-xs text-muted-foreground">職業（カンマ区切りで追加）</label>
+                          <div className="rounded-md border border-border bg-muted p-3">
+                            <div className="mb-3 flex min-h-7 flex-wrap gap-2">
+                              {genForm.occupations.map((occupation) => (
+                                <button
+                                  key={occupation}
+                                  type="button"
+                                  onClick={() => removeOccupationTag(occupation)}
+                                  className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2 py-1 text-xs text-foreground"
+                                >
+                                  {occupation}
+                                  <X size={12} />
+                                </button>
+                              ))}
+                              {genForm.occupations.length === 0 && !occupationInput && (
+                                <p className="text-xs text-muted-foreground">例: Webデザイナー, 看護師, 会社員</p>
+                              )}
+                            </div>
+                            <input
+                              type="text"
+                              value={occupationInput}
+                              onChange={(e) => {
+                                const nextValue = e.target.value;
+                                setOccupationInput(nextValue);
+                                if (/[,\n、]/.test(nextValue)) {
+                                  commitOccupationInput(nextValue);
+                                }
+                              }}
+                              onBlur={() => commitOccupationInput(occupationInput, true)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ',') {
+                                  e.preventDefault();
+                                  commitOccupationInput(occupationInput, true);
+                                } else if (e.key === 'Backspace' && !occupationInput && genForm.occupations.length > 0) {
+                                  removeOccupationTag(genForm.occupations[genForm.occupations.length - 1]);
+                                }
+                              }}
+                              placeholder="入力して Enter またはカンマで追加"
+                              className={TEXT_INPUT_CLASS}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Custom segments */}
+                      <div>
+                        <div className="mb-2 flex items-center justify-between">
+                          <label className="text-xs text-muted-foreground">カスタムセグメント（任意）</label>
+                          {!showSegmentForm && (
+                            <button
+                              type="button"
+                              onClick={() => setShowSegmentForm(true)}
+                              className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-foreground hover:bg-accent"
+                            >
+                              <Plus size={12} />
+                              セグメント追加
+                            </button>
+                          )}
+                        </div>
+
+                        {genForm.segments.length > 0 && (
+                          <div className="mb-2 space-y-1">
+                            {genForm.segments.map((seg, idx) => (
+                              <div key={idx} className="flex items-center gap-2 rounded-md border border-border bg-muted px-3 py-2 text-xs">
+                                <span className="font-medium text-foreground">{seg.name}</span>
+                                <span className="text-muted-foreground">:</span>
+                                <span className="flex-1 text-foreground">{seg.value}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setGenForm((p) => ({ ...p, segments: p.segments.filter((_, i) => i !== idx) }))}
+                                  className="text-muted-foreground hover:text-foreground"
+                                >
+                                  <X size={13} />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {showSegmentForm && (
+                          <div className="rounded-md border border-border bg-muted p-3 space-y-2">
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="mb-1 block text-xs text-muted-foreground">セグメント名 *</label>
+                                <input
+                                  type="text"
+                                  value={segmentDraft.name}
+                                  onChange={(e) => setSegmentDraft((p) => ({ ...p, name: e.target.value }))}
+                                  placeholder="例: 読書頻度"
+                                  className={TEXT_INPUT_CLASS}
+                                />
+                              </div>
+                              <div>
+                                <label className="mb-1 block text-xs text-muted-foreground">値 *</label>
+                                <input
+                                  type="text"
+                                  value={segmentDraft.value}
+                                  onChange={(e) => setSegmentDraft((p) => ({ ...p, value: e.target.value }))}
+                                  placeholder="例: 月に5冊以上"
+                                  className={TEXT_INPUT_CLASS}
+                                />
+                              </div>
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const name = segmentDraft.name.trim();
+                                  const value = segmentDraft.value.trim();
+                                  if (!name || !value) return;
+                                  setGenForm((p) => ({ ...p, segments: [...p.segments, { name, value }] }));
+                                  setSegmentDraft({ name: '', value: '' });
+                                  setShowSegmentForm(false);
+                                }}
+                                disabled={!segmentDraft.name.trim() || !segmentDraft.value.trim()}
+                                className={`flex-1 ${BUTTON_PRIMARY_CLASS} disabled:opacity-40`}
+                              >
+                                追加
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => { setShowSegmentForm(false); setSegmentDraft({ name: '', value: '' }); }}
+                                className="flex-1 rounded-md border border-border px-3 py-2 text-xs text-foreground hover:bg-accent"
+                              >
+                                キャンセル
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+
+                  {genFormError && (
+                    <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                      {genFormError}
+                    </p>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleStartGenerate}
+                    className={`w-full ${BUTTON_PRIMARY_CLASS}`}
+                  >
+                    <Sparkles size={14} className="mr-1.5 inline-block" />
+                    生成する
+                  </button>
+                </>
+              )}
+
+              {/* Progress */}
+              {genRunning && (
+                <div className="space-y-3">
+                  {/* Face reveal strip */}
+                  {(() => {
+                    const totalSlots = genProgress?.totalCount ?? genForm.count ?? 0;
+                    if (totalSlots === 0) return null;
+                    const completedCount = genResults.length;
+                    const activeIndex = genProgress ? genProgress.personaIndex - 1 : -1;
+                    return (
+                      <div className="flex flex-wrap justify-center gap-3 pt-1 pb-2">
+                        {Array.from({ length: totalSlots }, (_, i) => {
+                          const isCompleted = i < completedCount;
+                          const isActive = i === activeIndex;
+                          const persona = genResults[i];
+                          if (isCompleted) {
+                            return (
+                              <div
+                                key={`done-${persona.id}`}
+                                className="h-16 w-16 overflow-hidden rounded-full border-2 border-primary/50 bg-muted animate-pop-in"
+                              >
+                                <img
+                                  src={getDiceBearUrl(persona)}
+                                  alt={persona.display_name}
+                                  className="h-full w-full object-cover"
+                                />
+                              </div>
+                            );
+                          }
+                          if (isActive) {
+                            return (
+                              <div key={`active-${i}`} className="h-16 w-16 overflow-hidden rounded-full border-2 border-primary/30 bg-muted flex-shrink-0">
+                                <img
+                                  key={avatarTick}
+                                  src={SHUFFLE_AVATAR_URLS[avatarTick % SHUFFLE_AVATAR_URLS.length]}
+                                  alt="生成中"
+                                  className="h-full w-full object-cover animate-avatar-cycle"
+                                />
+                              </div>
+                            );
+                          }
+                          return (
+                            <div
+                              key={`pending-${i}`}
+                              className="h-16 w-16 rounded-full bg-muted border border-border animate-pulse"
+                            />
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                  {genProgress && (
+                    <div className="rounded-lg border border-border bg-muted p-4 space-y-2">
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span>ペルソナ {genProgress.personaIndex} / {genProgress.totalCount} を生成中</span>
+                        <Loader2 size={13} className="animate-spin" />
+                      </div>
+                      <p className="text-sm font-medium text-foreground">{genProgress.stepDetail}</p>
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+                        <div
+                          className="h-full rounded-full bg-primary transition-all duration-300"
+                          style={{
+                            width: `${Math.round(
+                              (((genProgress.personaIndex - 1) * genProgress.attributeRichness + genProgress.attributeCount) /
+                                (genProgress.totalCount * genProgress.attributeRichness)) * 100
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  {genResults.map((p) => (
+                    <div key={p.id} className="rounded-lg border border-border bg-muted px-4 py-3">
+                      <p className="text-sm font-semibold text-foreground">{p.display_name}（{p.age}歳・{p.gender}）</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">{p.occupation_category}</p>
+                      <p className="text-xs leading-relaxed text-muted-foreground mt-1">{p.one_line_summary}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Results summary */}
+              {!genRunning && genResults.length > 0 && (
+                <div className="space-y-3">
+                  <p className="text-sm font-semibold text-foreground">{genResults.length}名のペルソナが生成されました</p>
+                  {genResults.map((p) => (
+                    <div key={p.id} className="rounded-lg border border-border bg-muted px-4 py-3">
+                      <p className="text-sm font-semibold text-foreground">{p.display_name}（{p.age}歳・{p.gender}）</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">{p.occupation_category}</p>
+                      <p className="text-xs leading-relaxed text-muted-foreground mt-1">{p.one_line_summary}</p>
+                    </div>
+                  ))}
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGenTab('easy');
+                        setGenEasyText('');
+                        setGenForm({ ...DEFAULT_GEN_FORM });
+                        setGenFormError('');
+                        setOccupationInput('');
+                        setGenResults([]);
+                        refreshPersonaPool();
+                      }}
+                      className={`flex-1 ${BUTTON_SECONDARY_CLASS}`}
+                    >
+                      さらに生成する
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleClosePersonaGenerate}
+                      className={`flex-1 ${BUTTON_PRIMARY_CLASS}`}
+                    >
+                      完了
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 保存スナックバー */}
+      {savedSnackbar && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 rounded-lg bg-foreground px-4 py-2.5 text-sm text-background shadow-lg">
+          保存されました
         </div>
       )}
     </div>
