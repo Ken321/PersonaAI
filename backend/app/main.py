@@ -21,9 +21,9 @@ import app.models.user  # noqa: F401
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
     # DB接続プールをウォームアップ（Railway cold start対策）
     try:
+        await init_db()
         async with AsyncSessionLocal() as db:
             await db.execute(text("SELECT 1"))
     except Exception:
