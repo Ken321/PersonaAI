@@ -1,110 +1,108 @@
 # PersonaAI
 
-UXリサーチツールのモックアップ。ペルソナチャット・ジャーニーマップ・メンタルモデル・ストーリーボード・ユーザビリティテストを含む。
+UXリサーチ AI プラットフォーム。ペルソナ生成・チャット・フィードバックシミュレーション機能を提供。
 
-## 構成
-
-| レイヤー | 技術 |
-|---|---|
-| フロントエンド | React 18 + Vite + Tailwind CSS |
-| バックエンド | FastAPI + Python 3.11+ |
-| DB | PostgreSQL 16 |
+| レイヤー | 技術 | 本番URL |
+|---|---|---|
+| フロントエンド | React 18 + Vite + Tailwind CSS | https://persona-ai-ochre-six.vercel.app |
+| バックエンド | FastAPI + Python 3.12 | https://backend-production-c03b.up.railway.app |
+| データベース | PostgreSQL 16 (Railway) | caboose.proxy.rlwy.net:40998 |
 
 ---
 
-## ローカル起動手順
+## 初回環境構築
 
-> **Docker は不要です。** DBは Railway のクラウドPostgreSQLに直接接続します。
+### 前提条件
+- Node.js 18+
+- Python 3.11+
+- `backend/.env` ファイル（別途入手）
 
 ### 1. フロントエンド
 
 ```bash
-# 依存パッケージのインストール（初回のみ）
+# リポジトリルートで実行
 npm install
-
-# 開発サーバー起動（http://localhost:5173）
-npm run dev
 ```
 
-モックデータはフロントエンドに内包されているため、バックエンドなしでも画面確認は可能です。
-
-### 2. バックエンド（ローカル起動 → 本番DBに接続）
-
-DBは `backend/.env` に設定された **Railway** のクラウドPostgreSQLを参照します。ローカルにDBを立てる必要はありません。
+### 2. バックエンド
 
 ```bash
 cd backend
 
-# 仮想環境の作成・有効化（初回のみ）
+# 仮想環境の作成
 python3 -m venv .venv
-source .venv/bin/activate
 
-# 依存パッケージのインストール（初回のみ）
+# 仮想環境を有効化
+source .venv/bin/activate   # Mac/Linux
+# .venv\Scripts\activate    # Windows
+
+# 依存パッケージのインストール
 pip install -e .
-
-# サーバー起動（http://localhost:8000）
-source .venv/bin/activate
-uvicorn app.main:app --reload
 ```
 
-#### backend/.env の内容（要確認）
+### 3. backend/.env の設定
 
-| 変数 | 説明 |
-|---|---|
-| `OPENAI_API_KEY` | OpenAI APIキー |
-| `DATABASE_URL` | Railway PostgreSQL（本番DB）の接続URL |
-| `DATABASE_URL_SYNC` | 同期接続用URL（Alembicなど用） |
-| `ALLOWED_ORIGINS` | CORSを許可するオリジン |
+`backend/.env` を作成し、以下を設定：
 
-`.env` ファイルは `.gitignore` で管理し、リポジトリにコミットしないこと。
+```env
+OPENAI_API_KEY=sk-...
+DATABASE_URL=postgresql+asyncpg://postgres:...@caboose.proxy.rlwy.net:40998/railway
+DATABASE_URL_SYNC=postgresql+psycopg2://postgres:...@caboose.proxy.rlwy.net:40998/railway
+ALLOWED_ORIGINS=http://localhost:5173,https://persona-ai-ochre-six.vercel.app
+JWT_SECRET_KEY=（本番と同じ値を設定すること）
+```
+
+> `.env` は `.gitignore` により Git 管理対象外です。リポジトリにコミットしないこと。
+
+---
+
+## 起動方法（2回目以降）
+
+ターミナルを2つ開いて、それぞれ実行します。
+
+### ターミナル① — バックエンド
+
+```bash
+cd backend
+source .venv/bin/activate
+uvicorn app.main:app --reload
+# → http://localhost:8000 で起動
+```
+
+### ターミナル② — フロントエンド
+
+```bash
+# リポジトリルートで実行
+npm run dev
+# → http://localhost:5173 で起動
+```
+
+ブラウザで http://localhost:5173 を開く。
+
+---
+
+## APIドキュメント（ローカル）
+
+バックエンド起動後、http://localhost:8000/docs でSwagger UIが確認できます。
 
 ---
 
 ## DBマイグレーション
 
-DBスキーマを変更した場合（モデルにカラムを追加した等）は、Alembicでマイグレーションを実行してください。
-
-### マイグレーションファイルの作成（スキーマ変更後）
+モデルにカラムを追加・変更した場合：
 
 ```bash
 cd backend
 source .venv/bin/activate
 
-# マイグレーションファイルを手動作成（内容は backend/alembic/versions/ 以下の既存ファイルを参考に）
-# ファイル名例: backend/alembic/versions/xxxx_description.py
-```
+# マイグレーションファイルを作成
+alembic revision --autogenerate -m "説明"
 
-### 本番DBへの適用（head への更新）
-
-```bash
-cd backend
-source .venv/bin/activate
-
-# 現在の適用済みバージョンを確認
-alembic current
-
-# 最新（head）まで適用
+# 本番DBに適用
 alembic upgrade head
 ```
 
-> DBは `backend/.env` の `DATABASE_URL_SYNC` が指す **Railway 本番DB** に直接適用されます。実行前に内容を必ず確認してください。
-
-### バージョンだけを合わせたい場合（カラムがすでにDBに存在する場合）
-
-```bash
-# SQLを実行せずにバージョン記録だけ更新する
-alembic stamp head
-```
-
----
-
-## 主要スクリプト
-
-| コマンド | 内容 |
-|---|---|
-| `npm run dev` | フロント開発サーバー起動 |
-| `npm run build` | フロントのプロダクションビルド |
-| `npm run preview` | ビルド済みフロントのプレビュー |
+> DBは `DATABASE_URL_SYNC` が指す Railway 本番DBに直接適用されます。実行前に内容を確認してください。
 
 ---
 
@@ -112,14 +110,23 @@ alembic stamp head
 
 ```
 PersonaAI/
-├── index.jsx               # エントリーポイント
 ├── src/
-│   └── PluginConnectPage.jsx  # メインUI（ペルソナ・ジャーニーマップ等）
+│   ├── PluginConnectPage.jsx   # メインUI（ペルソナ・フィードバック等）
+│   └── LoginPage.jsx           # ログイン・新規登録画面
 ├── backend/
 │   ├── app/
-│   │   └── main.py         # FastAPI アプリ
-│   ├── mcp_server.py       # MCP サーバー
+│   │   ├── main.py             # FastAPI アプリ・ルーター登録
+│   │   ├── api/                # エンドポイント群
+│   │   ├── models/             # SQLAlchemy モデル
+│   │   ├── services/           # ビジネスロジック
+│   │   └── core/               # 設定・DB・認証
+│   ├── Dockerfile
 │   └── pyproject.toml
-├── docker-compose.yml
-└── vite.config.js
+├── vercel.json                  # Vercel設定（SPA fallback）
+├── vite.config.js               # ローカル用APIプロキシ設定
+└── CLAUDE.md                    # AI開発ガイド
 ```
+
+---
+
+詳細は [docs/](docs/) を参照してください。
