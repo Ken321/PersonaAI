@@ -970,7 +970,7 @@ export default function PluginConnectPage({ onLogout }) {
   // Load project settings, persona pool, and chat sessions in parallel on mount
   useEffect(() => {
     // Project settings
-    fetch('/api/project-settings/', { headers: authHeaders() })
+    fetch(`${API_BASE}/api/project-settings/`, { headers: authHeaders() })
       .then((res) => res.json())
       .then((data) => {
         if (data.assigned_persona_ids?.length > 0) {
@@ -994,7 +994,7 @@ export default function PluginConnectPage({ onLogout }) {
       .catch(() => { projectSettingsLoadedRef.current = true; });
 
     // Persona pool
-    fetch('/api/persona-pool/?limit=200', { headers: authHeaders() })
+    fetch(`${API_BASE}/api/persona-pool/?limit=200`, { headers: authHeaders() })
       .then((res) => res.json())
       .then((data) => {
         const pool = Array.isArray(data) ? data : [];
@@ -1015,7 +1015,7 @@ export default function PluginConnectPage({ onLogout }) {
   // Save assignedPersonaIds to DB whenever it changes (after initial load)
   useEffect(() => {
     if (!projectSettingsLoadedRef.current) return;
-    fetch('/api/project-settings/', {
+    fetch(`${API_BASE}/api/project-settings/`, {
       method: 'PUT',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ assigned_persona_ids: assignedPersonaIds }),
@@ -1030,7 +1030,7 @@ export default function PluginConnectPage({ onLogout }) {
       mediaInfo.overview === savedMediaInfoRef.current.overview
     ) return;
     const timer = setTimeout(() => {
-      fetch('/api/project-settings/', {
+      fetch(`${API_BASE}/api/project-settings/`, {
         method: 'PUT',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ media_info: mediaInfo }),
@@ -1050,7 +1050,7 @@ export default function PluginConnectPage({ onLogout }) {
   // Save segmentSettings to DB whenever it changes (after initial load)
   useEffect(() => {
     if (!projectSettingsLoadedRef.current) return;
-    fetch('/api/project-settings/', {
+    fetch(`${API_BASE}/api/project-settings/`, {
       method: 'PUT',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ segment_settings: segmentSettings }),
@@ -1059,7 +1059,7 @@ export default function PluginConnectPage({ onLogout }) {
 
   useEffect(() => {
     if (!projectSettingsLoadedRef.current) return;
-    fetch('/api/project-settings/', {
+    fetch(`${API_BASE}/api/project-settings/`, {
       method: 'PUT',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
@@ -1072,7 +1072,7 @@ export default function PluginConnectPage({ onLogout }) {
 
   useEffect(() => {
     if (!projectSettingsLoadedRef.current) return;
-    fetch('/api/project-settings/', {
+    fetch(`${API_BASE}/api/project-settings/`, {
       method: 'PUT',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ active_persona_id: activePersonaId }),
@@ -1080,7 +1080,7 @@ export default function PluginConnectPage({ onLogout }) {
   }, [activePersonaId]);
 
   const refreshPersonaPool = () => {
-    fetch('/api/persona-pool/?limit=200', { headers: authHeaders() })
+    fetch(`${API_BASE}/api/persona-pool/?limit=200`, { headers: authHeaders() })
       .then((res) => res.json())
       .then((data) => setPersonaPool(Array.isArray(data) ? data : []))
       .catch(() => {});
@@ -1262,7 +1262,7 @@ export default function PluginConnectPage({ onLogout }) {
         setOccupationInput('');
       }
       genAbortRef.current = new AbortController();
-      const res = await fetch('/api/persona-pool/generate-stream', {
+      const res = await fetch(`${API_BASE}/api/persona-pool/generate-stream`, {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body),
