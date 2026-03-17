@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { translateTaxonomyLabel } from './taxonomyLabelsJa';
 
-const API_BASE = '';
+const API_BASE = import.meta.env.VITE_API_BASE || '';
 
 function getToken() {
   return localStorage.getItem('token') || sessionStorage.getItem('token') || '';
