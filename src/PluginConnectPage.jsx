@@ -18,22 +18,9 @@ import {
   Users
 } from 'lucide-react';
 import { translateTaxonomyLabel } from './taxonomyLabelsJa';
+import { API_BASE, authHeaders } from './utils/api';
 
-const API_BASE = import.meta.env.VITE_API_BASE || '';
-
-function getToken() {
-  return localStorage.getItem('token') || sessionStorage.getItem('token') || '';
-}
-function getOpenAIKey() {
-  return localStorage.getItem('openai_api_key') || '';
-}
 const API_KEY_MISSING_ERROR = 'OpenAI APIキーが設定されていません。「設定」タブでAPIキーを登録してください。';
-function authHeaders(extra = {}) {
-  const headers = { Authorization: `Bearer ${getToken()}`, ...extra };
-  const openaiKey = getOpenAIKey();
-  if (openaiKey) headers['X-OpenAI-Api-Key'] = openaiKey;
-  return headers;
-}
 
 async function scrapeUrl(url) {
   const res = await fetch(`${API_BASE}/api/scrape/`, {
@@ -1668,7 +1655,7 @@ export default function PluginConnectPage({ onLogout }) {
 
     setIsChatStreaming(true);
     try {
-      const response = await fetch(`/api/persona/chats/${chatId}/stream`, {
+      const response = await fetch(`${API_BASE}/api/persona/chats/${chatId}/stream`, {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({

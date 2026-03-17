@@ -5,7 +5,6 @@ import openai
 from fastapi import APIRouter, Depends, HTTPException
 from app.api.deps import get_openai_key
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -29,12 +28,6 @@ router = APIRouter(prefix="/api/persona", tags=["persona"])
 MODEL = "gpt-4o-mini"
 DEFAULT_CHAT_TITLE = "新しいチャット"
 
-
-class ChatRequest(BaseModel):
-    persona_name: str
-    persona_background: str
-    message: str
-    history: list[dict] = Field(default_factory=list)
 
 
 def _build_system_prompt(persona_name: str, persona_background: str) -> str:
@@ -219,30 +212,6 @@ async def stream_chat_message(
             )
             chat.updated_at = datetime.utcnow()
             await db.commit()
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
-
-
-@router.post("/chat/stream")
-async def stream_chat(request: ChatRequest, api_key: str = Depends(get_openai_key)):
-    client = openai.AsyncOpenAI(api_key=api_key)
-    messages = [
-        {"role": "system", "content": _build_system_prompt(request.persona_name, request.persona_background)},
-        *request.history,
-        {"role": "user", "content": request.message},
-    ]
-
-    async def generate():
-        stream = await client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            stream=True,
-        )
-        async for chunk in stream:
-            text = chunk.choices[0].delta.content or ""
-            if text:
-                yield f"data: {text}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
