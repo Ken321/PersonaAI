@@ -3,6 +3,7 @@ from uuid import UUID
 
 import openai
 from fastapi import APIRouter, Depends, HTTPException
+from app.api.deps import get_openai_key
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -10,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.auth import get_current_user
-from app.core.config import settings
 from app.core.database import get_db
 from app.models.chat import PersonaChatMessage, PersonaChatSession
 from app.models.persona import Persona
@@ -165,13 +165,14 @@ async def stream_chat_message(
     body: PersonaChatSendRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    api_key: str = Depends(get_openai_key),
 ):
     message_text = body.message.strip()
     if not message_text:
         raise HTTPException(status_code=400, detail="Message is required.")
 
     chat = await _get_chat_or_404(chat_id, db, current_user.id)
-    client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
+    client = openai.AsyncOpenAI(api_key=api_key)
 
     had_messages = len(chat.messages) > 0
     history = [_chat_message_to_openai(message) for message in chat.messages]
@@ -224,8 +225,8 @@ async def stream_chat_message(
 
 
 @router.post("/chat/stream")
-async def stream_chat(request: ChatRequest):
-    client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
+async def stream_chat(request: ChatRequest, api_key: str = Depends(get_openai_key)):
+    client = openai.AsyncOpenAI(api_key=api_key)
     messages = [
         {"role": "system", "content": _build_system_prompt(request.persona_name, request.persona_background)},
         *request.history,

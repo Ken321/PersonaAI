@@ -79,7 +79,10 @@ async def generate_summary(
     feedbacks: list[SimulationFeedback],
     db: AsyncSession,
     client: openai.AsyncOpenAI,
+    model: str = "",
 ) -> SimulationSummary:
+    if not model:
+        model = settings.insight_generation_model
     agg = _aggregate_scores(feedbacks)
     aggregated_json = _build_aggregated_json(feedbacks)
 
@@ -89,7 +92,7 @@ async def generate_summary(
     )
 
     response = await client.chat.completions.create(
-        model=settings.insight_generation_model,
+        model=model,
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
     )

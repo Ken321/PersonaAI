@@ -1,8 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import openai
-from app.core.config import settings
+from app.api.deps import get_openai_key
 
 router = APIRouter(prefix="/api/feedback", tags=["feedback"])
 
@@ -16,8 +16,8 @@ class FeedbackRequest(BaseModel):
 
 
 @router.post("/stream")
-async def stream_feedback(request: FeedbackRequest):
-    client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
+async def stream_feedback(request: FeedbackRequest, api_key: str = Depends(get_openai_key)):
+    client = openai.AsyncOpenAI(api_key=api_key)
 
     system_prompt = (
         f"あなたは {request.persona_name} というペルソナです。\n"

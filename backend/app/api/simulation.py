@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.auth import get_current_user
-from app.core.config import settings
+from app.api.deps import get_openai_key
 from app.core.database import get_db, AsyncSessionLocal
 from app.models.persona import Persona
 from app.models.simulation import Simulation, SimulationFeedback, SimulationSummary
@@ -86,9 +86,9 @@ async def _select_personas(
         role_buckets[key].append(p)
 
     role_targets = {
-        "positive": 0.40,
-        "neutral": 0.45,
-        "skeptical": 0.15,
+        "positive": 0.30,
+        "neutral": 0.35,
+        "skeptical": 0.35,
     }
 
     selected: list[Persona] = []
@@ -105,8 +105,13 @@ async def _run_simulation_background(
     personas: list,
     article_content: str,
     media_description: str,
+    api_key: str = "",
+    model: str = "",
 ) -> None:
-    client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
+    from app.core.config import settings as _settings
+    feedback_model = model or _settings.feedback_generation_model
+    insight_model = model or _settings.insight_generation_model
+    client = openai.AsyncOpenAI(api_key=api_key)
 
     async def run_one(persona: Persona) -> SimulationFeedback | None:
         async with AsyncSessionLocal() as task_db:
@@ -114,6 +119,7 @@ async def _run_simulation_background(
                 result = await generate_feedback_for_persona(
                     simulation_id, persona, article_content, task_db, client,
                     media_description=media_description,
+                    model=feedback_model,
                 )
                 # 完了件数を atomic にインクリメント
                 await task_db.execute(
@@ -139,7 +145,7 @@ async def _run_simulation_background(
                 .options(selectinload(SimulationFeedback.persona))
             )
             loaded_feedbacks = result.scalars().all()
-            await generate_summary(simulation_id, loaded_feedbacks, db, client)
+            await generate_summary(simulation_id, loaded_feedbacks, db, client, model=insight_model)
 
         simulation = await db.get(Simulation, simulation_id)
         if simulation:
@@ -154,6 +160,7 @@ async def create_simulation(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    api_key: str = Depends(get_openai_key),
 ):
     personas = await _select_personas(
         request.persona_count,
@@ -181,6 +188,8 @@ async def create_simulation(
         personas,
         request.article_content,
         request.media_description or "",
+        api_key,
+        request.model or "",
     )
 
     return simulation

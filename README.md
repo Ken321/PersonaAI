@@ -43,6 +43,7 @@ source .venv/bin/activate
 pip install -e .
 
 # サーバー起動（http://localhost:8000）
+source .venv/bin/activate
 uvicorn app.main:app --reload
 ```
 

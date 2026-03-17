@@ -35,6 +35,7 @@ class SimulationFeedback(Base):
 
     honest_reaction = Column(Text)
     what_worked = Column(Text)
+    what_failed = Column(Text)
     media_fit = Column(Text)
     title_feedback = Column(Text)
     rewrite_suggestion = Column(Text)

@@ -24,8 +24,15 @@ const API_BASE = '';
 function getToken() {
   return localStorage.getItem('token') || sessionStorage.getItem('token') || '';
 }
+function getOpenAIKey() {
+  return localStorage.getItem('openai_api_key') || '';
+}
+const API_KEY_MISSING_ERROR = 'OpenAI APIキーが設定されていません。「設定」タブでAPIキーを登録してください。';
 function authHeaders(extra = {}) {
-  return { Authorization: `Bearer ${getToken()}`, ...extra };
+  const headers = { Authorization: `Bearer ${getToken()}`, ...extra };
+  const openaiKey = getOpenAIKey();
+  if (openaiKey) headers['X-OpenAI-Api-Key'] = openaiKey;
+  return headers;
 }
 
 async function scrapeUrl(url) {
@@ -41,7 +48,7 @@ async function scrapeUrl(url) {
   return res.json(); // { title, content, url }
 }
 
-async function runSimulation({ articleContent, personaCount = 20, selectedPersonaIds = [], mediaDescription = '' }) {
+async function runSimulation({ articleContent, personaCount = 20, selectedPersonaIds = [], mediaDescription = '', model = '' }) {
   const res = await fetch(`${API_BASE}/api/simulations/`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
@@ -50,9 +57,13 @@ async function runSimulation({ articleContent, personaCount = 20, selectedPerson
       persona_count: personaCount,
       selected_persona_ids: selectedPersonaIds,
       media_description: mediaDescription || undefined,
+      model: model || undefined,
     }),
   });
-  if (!res.ok) throw new Error(`simulation failed: ${res.status}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `シミュレーションの開始に失敗しました（HTTP ${res.status}）`);
+  }
   return res.json();
 }
 
@@ -136,6 +147,7 @@ function mapApiFeedbackToLocal(apiFeedback, persona = null) {
     riskLevel,
     summary: reaction.split(/。|\n/)[0] || '',
     positives: toLines(apiFeedback.what_worked),
+    negatives: toLines(apiFeedback.what_failed),
     mediaFit: toLines(apiFeedback.media_fit),
     titleFeedback: toLines(apiFeedback.title_feedback),
     actionItems: toLines(apiFeedback.rewrite_suggestion),
@@ -469,6 +481,7 @@ function normalizeFeedback(feedback) {
     riskLevel: feedback.riskLevel || 'low',
     summary: feedback.summary || '',
     positives: Array.isArray(feedback.positives) ? feedback.positives.filter(Boolean) : [],
+    negatives: Array.isArray(feedback.negatives) ? feedback.negatives.filter(Boolean) : [],
     mediaFit: Array.isArray(feedback.mediaFit) ? feedback.mediaFit.filter(Boolean) : [],
     titleFeedback: Array.isArray(feedback.titleFeedback) ? feedback.titleFeedback.filter(Boolean) : [],
     actionItems: Array.isArray(feedback.actionItems) ? feedback.actionItems.filter(Boolean) : [],
@@ -889,6 +902,9 @@ export default function PluginConnectPage({ onLogout }) {
 
   const [mediaInfo, setMediaInfo] = useState({ title: '', overview: '' });
   const [savedSnackbar, setSavedSnackbar] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState(() => localStorage.getItem('openai_api_key') || '');
+  const [apiKeySaved, setApiKeySaved] = useState(false);
+  const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('openai_model') || 'gpt-5-mini');
   const [segmentSettings, setSegmentSettings] = useState(DEFAULT_SEGMENT_SETTINGS);
   const [catalogPage, setCatalogPage] = useState(1);
 
@@ -942,6 +958,7 @@ export default function PluginConnectPage({ onLogout }) {
   const [genResults, setGenResults] = useState([]); // completed persona summaries
   const [genRunning, setGenRunning] = useState(false);
   const [avatarTick, setAvatarTick] = useState(0);
+  const genAbortRef = useRef(null);
 
   // Cycle avatar tick every second during generation
   useEffect(() => {
@@ -1145,6 +1162,11 @@ export default function PluginConnectPage({ onLogout }) {
 
 
   const handleOpenPersonaGenerate = () => {
+    // If generation is already running, just re-open the modal to show progress
+    if (genRunning) {
+      setShowPersonaGenerateModal(true);
+      return;
+    }
     setIsOnboarding(false);
     setGenTab('easy');
     setGenEasyText(mediaInfo.overview || '');
@@ -1160,15 +1182,25 @@ export default function PluginConnectPage({ onLogout }) {
   };
 
   const handleClosePersonaGenerate = () => {
-    if (genRunning) return; // prevent close mid-generation
     setShowPersonaGenerateModal(false);
     if (isOnboarding) {
       localStorage.setItem('personaai_onboarding_done', '1');
       setIsOnboarding(false);
     }
-    if (genResults.length > 0) {
+    if (!genRunning && genResults.length > 0) {
       refreshPersonaPool();
     }
+  };
+
+  const handleCancelGenerate = () => {
+    if (genAbortRef.current) {
+      genAbortRef.current.abort();
+      genAbortRef.current = null;
+    }
+    setGenRunning(false);
+    setGenProgress(null);
+    setGenResults([]);
+    refreshPersonaPool();
   };
 
   const handleStartGenerate = async () => {
@@ -1197,6 +1229,11 @@ export default function PluginConnectPage({ onLogout }) {
       ? appendUniqueTags(genForm.occupations, [pendingOccupation])
       : genForm.occupations;
 
+    if (!getOpenAIKey()) {
+      setGenFormError(API_KEY_MISSING_ERROR);
+      return;
+    }
+
     setGenFormError('');
     setGenRunning(true);
     setGenProgress({ personaIndex: 1, totalCount: genForm.count, step: 'starting', stepDetail: genTab === 'easy' ? 'テキストを解析中...' : '準備中...', attributeCount: 0, attributeRichness: Number(genForm.attribute_richness) || 200 });
@@ -1224,11 +1261,18 @@ export default function PluginConnectPage({ onLogout }) {
         setGenForm((prev) => ({ ...prev, occupations }));
         setOccupationInput('');
       }
+      genAbortRef.current = new AbortController();
       const res = await fetch('/api/persona-pool/generate-stream', {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body),
+        signal: genAbortRef.current.signal,
       });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `ペルソナ生成に失敗しました（HTTP ${res.status}）`);
+      }
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -1266,9 +1310,12 @@ export default function PluginConnectPage({ onLogout }) {
         }
       }
     } catch (err) {
-      console.error('Generation error:', err);
-      setGenFormError('ペルソナ生成に失敗しました。');
+      if (err.name !== 'AbortError') {
+        console.error('Generation error:', err);
+        setGenFormError(err.message || 'ペルソナ生成に失敗しました。');
+      }
     } finally {
+      genAbortRef.current = null;
       setGenRunning(false);
     }
   };
@@ -1576,6 +1623,11 @@ export default function PluginConnectPage({ onLogout }) {
     const trimmed = chatInput.trim();
     if (!trimmed || isChatStreaming) return;
 
+    if (!getOpenAIKey()) {
+      appendMessage('system', API_KEY_MISSING_ERROR);
+      return;
+    }
+
     const responder = currentChatPersona || assignedPersonas[Math.floor(Math.random() * assignedPersonas.length)];
     if (!responder?.id) {
       appendMessage('system', '先に「設定」でペルソナを選択してください。');
@@ -1727,6 +1779,11 @@ export default function PluginConnectPage({ onLogout }) {
       return;
     }
 
+    if (!getOpenAIKey()) {
+      setArticleFormError(API_KEY_MISSING_ERROR);
+      return;
+    }
+
     setArticleFormError('');
 
     const now = new Date().toISOString();
@@ -1778,6 +1835,7 @@ export default function PluginConnectPage({ onLogout }) {
           personaCount: targetPersonaIds.length,
           selectedPersonaIds: targetPersonaIds,
           mediaDescription: useMediaDescription,
+          model: selectedModel,
         });
 
         // ポーリングで進捗を監視（1秒ごと）
@@ -1890,6 +1948,70 @@ export default function PluginConnectPage({ onLogout }) {
           </div>
 
           <div className="rounded-xl border border-border p-4 space-y-3">
+            <h3 className="text-sm font-semibold text-foreground">OpenAI APIキー</h3>
+
+            <div className="flex gap-2">
+              <input
+                type="password"
+                value={apiKeyInput}
+                onChange={(e) => setApiKeyInput(e.target.value)}
+                placeholder="sk-..."
+                className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary font-mono"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  localStorage.setItem('openai_api_key', apiKeyInput);
+                  setApiKeySaved(true);
+                  setTimeout(() => setApiKeySaved(false), 2000);
+                }}
+                className={BUTTON_PRIMARY_CLASS}
+              >
+                {apiKeySaved ? '保存済み ✓' : '保存'}
+              </button>
+              {apiKeyInput && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    localStorage.removeItem('openai_api_key');
+                    setApiKeyInput('');
+                  }}
+                  className={BUTTON_SECONDARY_CLASS}
+                >
+                  削除
+                </button>
+              )}
+            </div>
+            {!localStorage.getItem('openai_api_key') && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                ⚠ APIキーが未設定です。AI機能を使用するには設定してください。
+              </p>
+            )}
+            <div className="space-y-1">
+              <label className="block text-xs text-muted-foreground">使用モデル</label>
+              <div className="relative inline-block">
+              <select
+                value={selectedModel}
+                onChange={(e) => {
+                  setSelectedModel(e.target.value);
+                  localStorage.setItem('openai_model', e.target.value);
+                }}
+                className="appearance-none rounded-lg border border-border bg-background pl-3 pr-8 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+              >
+                <option value="gpt-5-mini">gpt-5-mini（デフォルト）</option>
+                <option value="gpt-4o-mini">gpt-4o-mini</option>
+                <option value="gpt-5">gpt-5</option>
+                <option value="gpt-5.1">gpt-5.1</option>
+                <option value="gpt-5.2">gpt-5.2</option>
+              </select>
+              <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-muted-foreground">
+                <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd"/></svg>
+              </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-border p-4 space-y-3">
             <h3 className="text-sm font-semibold text-foreground">メディア情報</h3>
             <div className="space-y-3">
               <div>
@@ -1991,6 +2113,42 @@ export default function PluginConnectPage({ onLogout }) {
                       <span className="text-primary-foreground">×</span>
                     </button>
                   ))}
+                </div>
+              )}
+              {genRunning && !showPersonaGenerateModal && (
+                <div className="mt-3 space-y-2 border-t border-border pt-3">
+                  {genProgress ? (
+                    <>
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span>ペルソナ {genProgress.personaIndex} / {genProgress.totalCount} を生成中</span>
+                        <Loader2 size={12} className="animate-spin" />
+                      </div>
+                      <p className="text-xs font-medium text-foreground">{genProgress.stepDetail}</p>
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+                        <div
+                          className="h-full rounded-full bg-primary transition-all duration-300"
+                          style={{
+                            width: `${Math.round(
+                              (((genProgress.personaIndex - 1) * genProgress.attributeRichness + genProgress.attributeCount) /
+                                (genProgress.totalCount * genProgress.attributeRichness)) * 100
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Loader2 size={12} className="animate-spin" />
+                      <span>生成中...</span>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleCancelGenerate}
+                    className="inline-flex rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 transition-colors"
+                  >
+                    生成をキャンセル
+                  </button>
                 </div>
               )}
             </div>
@@ -2603,30 +2761,68 @@ export default function PluginConnectPage({ onLogout }) {
                 </span>
               </div>
 
-              <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-muted-foreground md:grid-cols-5">
-                <div>
-                  <p>実行時刻</p>
-                  <p className="mt-1 text-sm text-foreground">{formatDateTime(selectedArticle.createdAt)}</p>
-                </div>
-                <div>
-                  <p>入力方式</p>
-                  <p className="mt-1 text-sm text-foreground">{getArticleInputModeLabel(selectedArticle.inputMode)}</p>
-                </div>
-                <div>
-                  <p>対象ペルソナ</p>
-                  <p className="mt-1 text-sm text-foreground">{getArticleTargetLabel(selectedArticle)}</p>
-                </div>
-                <div>
-                  <p>完了件数</p>
-                  <p className="mt-1 text-sm text-foreground">
-                    {selectedArticle.completedCount}/{selectedArticle.personaCount}
-                  </p>
-                </div>
-                <div>
-                  <p>平均スコア</p>
-                  <p className="mt-1 text-sm text-foreground">
-                    {selectedArticle.averageScore ?? '-'}
-                  </p>
+              <div className="mt-4 flex items-start gap-4">
+                {(() => {
+                  const personas = selectedArticle.targetPersonas?.length > 0
+                    ? selectedArticle.targetPersonas
+                    : selectedArticle.feedbacks.map((f) => f.persona).filter(Boolean);
+                  if (personas.length === 0) return null;
+                  const isRunning = selectedArticle.status === 'running';
+                  const waveCount = personas.length;
+                  return (
+                    <div className="flex-shrink-0">
+                      <p className="text-xs text-muted-foreground">対象ペルソナ</p>
+                      <div className="mt-2 flex items-end" style={{ paddingBottom: isRunning ? 8 : 0 }}>
+                        {personas.map((persona, i) => (
+                          <div
+                            key={persona.id || i}
+                            title={persona.name || persona.display_name}
+                            style={{
+                              width: 30,
+                              height: 30,
+                              borderRadius: '50%',
+                              overflow: 'hidden',
+                              border: '2px solid white',
+                              marginLeft: i === 0 ? 0 : -10,
+                              flexShrink: 0,
+                              position: 'relative',
+                              zIndex: personas.length - i,
+                              background: '#f3f4f6',
+                              ...(isRunning ? {
+                                animation: `persona-wave 1.2s ease-in-out infinite`,
+                                animationDelay: `${(i / waveCount) * 1.2}s`,
+                              } : {}),
+                            }}
+                          >
+                            <img
+                              src={getDiceBearUrl(persona)}
+                              alt={persona.name || persona.display_name}
+                              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                              loading="lazy"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+                <div className="grid grid-cols-3 gap-6 text-xs text-muted-foreground">
+                  <div>
+                    <p>実行時刻</p>
+                    <p className="mt-1 text-sm text-foreground">{formatDateTime(selectedArticle.createdAt)}</p>
+                  </div>
+                  <div>
+                    <p>完了件数</p>
+                    <p className="mt-1 text-sm text-foreground">
+                      {selectedArticle.completedCount}/{selectedArticle.personaCount}
+                    </p>
+                  </div>
+                  <div>
+                    <p>平均スコア</p>
+                    <p className="mt-1 text-sm text-foreground">
+                      {selectedArticle.averageScore ?? '-'}
+                    </p>
+                  </div>
                 </div>
               </div>
 
@@ -2637,14 +2833,14 @@ export default function PluginConnectPage({ onLogout }) {
                       className="absolute h-full bg-primary transition-all duration-500"
                       style={{
                         width: selectedArticle.personaCount > 0
-                          ? `${(selectedArticle.completedCount / selectedArticle.personaCount) * 100}%`
+                          ? `${Math.min((selectedArticle.completedCount / selectedArticle.personaCount) * 100, 95)}%`
                           : '0%',
                       }}
                     />
                   </div>
                   <div className="mt-2 flex items-center justify-between">
                     <p className="text-xs text-muted-foreground">
-                      {selectedArticle.completedCount}/{selectedArticle.personaCount} ペルソナ解析完了
+                      ペルソナが記事を閲覧中… ({selectedArticle.completedCount}/{selectedArticle.personaCount})
                     </p>
                     <button
                       type="button"
@@ -2812,6 +3008,17 @@ export default function PluginConnectPage({ onLogout }) {
                   ))}
                 </ul>
               </div>
+
+              {selectedFeedback.negatives?.length > 0 && (
+                <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4">
+                  <h3 className="text-sm font-semibold text-destructive">引っかかった点</h3>
+                  <ul className="mt-2 space-y-2 text-xs leading-relaxed text-foreground">
+                    {selectedFeedback.negatives.map((item) => (
+                      <li key={`bad-${item}`}>- {item}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               <div className="rounded-xl border border-border bg-card p-4">
                 <h3 className="text-sm font-semibold text-foreground">メディアとの相性</h3>
@@ -3196,7 +3403,7 @@ export default function PluginConnectPage({ onLogout }) {
       {showPersonaGenerateModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-          onClick={() => { if (!genRunning) handleClosePersonaGenerate(); }}
+          onClick={handleClosePersonaGenerate}
         >
           <div
             className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-card"
@@ -3215,9 +3422,8 @@ export default function PluginConnectPage({ onLogout }) {
               <button
                 type="button"
                 onClick={handleClosePersonaGenerate}
-                disabled={genRunning}
                 aria-label="閉じる"
-                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-border text-foreground transition-colors hover:bg-accent disabled:opacity-40"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-border text-foreground transition-colors hover:bg-accent"
               >
                 <X size={16} />
               </button>
@@ -3617,6 +3823,13 @@ export default function PluginConnectPage({ onLogout }) {
                       <p className="text-xs leading-relaxed text-muted-foreground mt-1">{p.one_line_summary}</p>
                     </div>
                   ))}
+                  <button
+                    type="button"
+                    onClick={handleCancelGenerate}
+                    className="inline-flex rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700 hover:bg-red-100 transition-colors"
+                  >
+                    生成をキャンセル
+                  </button>
                 </div>
               )}
 

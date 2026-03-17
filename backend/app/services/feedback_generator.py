@@ -20,7 +20,10 @@ async def generate_feedback_for_persona(
     db: AsyncSession,
     client: openai.AsyncOpenAI,
     media_description: str = "",
+    model: str = "",
 ) -> SimulationFeedback:
+    if not model:
+        model = settings.feedback_generation_model
     role_instruction = ROLE_INSTRUCTIONS.get(persona.ad_attitude or "neutral", "")
 
     system_prompt = FEEDBACK_SYSTEM_PROMPT.format(
@@ -42,7 +45,7 @@ async def generate_feedback_for_persona(
     )
 
     response = await client.chat.completions.create(
-        model=settings.feedback_generation_model,
+        model=model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -60,6 +63,7 @@ async def generate_feedback_for_persona(
         persona_id=persona.id,
         honest_reaction=data.get("honest_reaction"),
         what_worked=data.get("what_worked"),
+        what_failed=data.get("what_failed"),
         media_fit=data.get("media_fit"),
         title_feedback=data.get("title_feedback"),
         rewrite_suggestion=data.get("rewrite_suggestion"),
@@ -67,7 +71,7 @@ async def generate_feedback_for_persona(
         score_credibility=scores.get("credibility"),
         score_engagement=scores.get("engagement"),
         score_purchase_intent=scores.get("purchase_intent"),
-        generated_by=settings.feedback_generation_model,
+        generated_by=model,
         input_tokens=response.usage.prompt_tokens if response.usage else None,
         output_tokens=response.usage.completion_tokens if response.usage else None,
     )

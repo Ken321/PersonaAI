@@ -11,6 +11,7 @@ class SimulationCreate(BaseModel):
     persona_count: int = 20
     selected_persona_ids: Optional[list[UUID]] = None
     media_description: Optional[str] = None
+    model: Optional[str] = None
 
 
 class SimulationRead(BaseModel):
@@ -32,6 +33,7 @@ class SimulationFeedbackRead(BaseModel):
     persona_id: UUID
     honest_reaction: Optional[str] = None
     what_worked: Optional[str] = None
+    what_failed: Optional[str] = None
     media_fit: Optional[str] = None
     title_feedback: Optional[str] = None
     rewrite_suggestion: Optional[str] = None

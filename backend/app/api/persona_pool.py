@@ -14,6 +14,7 @@ from sqlalchemy.orm import load_only
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import get_current_user
+from app.api.deps import get_openai_key
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.persona import Persona, RegionType
@@ -141,13 +142,14 @@ async def regenerate_persona(
     persona_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    api_key: str = Depends(get_openai_key),
 ):
     persona = await db.get(Persona, persona_id)
     # グローバルデフォルト（user_id=NULL）は再生成不可
     if not persona or persona.user_id is None or str(persona.user_id) != str(current_user.id):
         raise HTTPException(status_code=404, detail="Persona not found")
 
-    client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
+    client = openai.AsyncOpenAI(api_key=api_key)
     template = {
         "age": persona.age,
         "gender": persona.gender,
@@ -171,6 +173,7 @@ async def generate_pool(
     request: GeneratePersonaPoolRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    api_key: str = Depends(get_openai_key),
 ):
     from scripts.seed_personas import PERSONA_TEMPLATES
 
@@ -199,7 +202,7 @@ async def generate_pool(
             ],
         }
 
-    client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
+    client = openai.AsyncOpenAI(api_key=api_key)
     created = []
     errors = []
 
@@ -285,11 +288,14 @@ async def _generate_name(
     exclude_names: list[str] | None = None,
 ) -> str:
     """必須タクソノミー属性（Gender, Age, Location）をもとに日本人名を生成する。"""
-    gender_section = taxonomy_attributes.get("Demographics", {}).get("Gender", {})
+    # taxonomy_attributes はフラット構造（例: "Demographics > Gender > Sex Assigned at Birth": "女性"）
     # 名前の性別判定は出生時の性別を優先し、なければ Gender Identity にフォールバック
-    sex_for_name = gender_section.get("Sex Assigned at Birth") or gender_section.get("Gender Identity", "")
-    specific_age = taxonomy_attributes.get("Demographics", {}).get("Age", {}).get("Specific Age", "")
-    city = taxonomy_attributes.get("Demographics", {}).get("Location", {}).get("City", "")
+    sex_for_name = (
+        taxonomy_attributes.get("Demographics > Gender > Sex Assigned at Birth")
+        or taxonomy_attributes.get("Demographics > Gender > Gender Identity", "")
+    )
+    specific_age = taxonomy_attributes.get("Demographics > Age > Specific Age", "")
+    city = taxonomy_attributes.get("Demographics > Location > City", "")
 
     exclude_clause = ""
     if exclude_names:
@@ -401,8 +407,9 @@ async def _deep_persona_stream(
     request: DeepPersonaGenerateRequest,
     db: AsyncSession,
     user_id,
+    api_key: str = "",
 ) -> AsyncGenerator[str, None]:
-    client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
+    client = openai.AsyncOpenAI(api_key=api_key)
     model = settings.persona_generation_model
     walker = TaxonomyWalker(client, model)
     extractor = AttributeExtractor(client, model)
@@ -586,13 +593,14 @@ async def generate_personas_stream(
     request: DeepPersonaGenerateRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    api_key: str = Depends(get_openai_key),
 ):
     """
     DeepPersona手法でペルソナを生成する（SSEストリーミング）。
     フロントエンドは EventSource で接続し、progress / completed / done イベントを受け取る。
     """
     return StreamingResponse(
-        _deep_persona_stream(request, db, current_user.id),
+        _deep_persona_stream(request, db, current_user.id, api_key=api_key),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
